@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <PublishReadyToRun>false</PublishReadyToRun>
+
+    <AssemblyName>KartRider.P5136.Connector</AssemblyName>
+    <RootNamespace>KartRider.Connector</RootNamespace>
+    <StartupObject>KartRider.Connector.ConnectorProgram</StartupObject>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <DebugType>none</DebugType>
+    <WarningLevel>0</WarningLevel>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\KartRider.P5136.Server.csproj"
+                      AdditionalProperties="UseAppHost=false;PublishSingleFile=false;SelfContained=false" />
+  </ItemGroup>
+
+  <Target Name="RemoveReferencedServerHostFiles" AfterTargets="ComputeFilesToPublish">
+    <ItemGroup>
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)"
+                             Condition="'%(ResolvedFileToPublish.RelativePath)' == 'KartRider.P5136.Server.deps.json' Or
+                                        '%(ResolvedFileToPublish.RelativePath)' == 'KartRider.P5136.Server.runtimeconfig.json'" />
+    </ItemGroup>
+  </Target>
+</Project>

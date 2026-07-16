@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <PublishReadyToRun>false</PublishReadyToRun>
+
+    <AssemblyName>KartRider.P5136.Server</AssemblyName>
+    <RootNamespace>Launcher</RootNamespace>
+    <ApplicationManifest>Properties\app.manifest</ApplicationManifest>
+    <EnableClickOnceSecuritySettings>true</EnableClickOnceSecuritySettings>
+
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <WarningLevel>0</WarningLevel>
+    <DebugType>none</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="Legacy\Korean20051214\Korean20051214.csproj"
+                      Aliases="Korean20051214Legacy" />
+  </ItemGroup>
+
+  <!-- The connector and shared compatibility project are built through project
+       references and are not source files for this executable. -->
+  <ItemGroup>
+    <Compile Remove="KartRider.Connector\**\*.cs" />
+    <Compile Remove="Legacy\**\*.cs" />
+    <Compile Remove="tests\**\*.cs" />
+    <EmbeddedResource Remove="KartRider.Connector\**\*" />
+    <EmbeddedResource Remove="Legacy\**\*" />
+    <EmbeddedResource Remove="tests\**\*" />
+    <None Remove="KartRider.Connector\**\*" />
+    <None Remove="Legacy\**\*" />
+    <None Remove="tests\**\*" />
+  </ItemGroup>
+</Project>

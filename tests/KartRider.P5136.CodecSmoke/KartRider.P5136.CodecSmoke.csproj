@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <AssemblyName>KartRider.P5136.CodecSmoke</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\KartRider.P5136.Server.csproj"
+                      AdditionalProperties="UseAppHost=false;PublishSingleFile=false;SelfContained=false" />
+  </ItemGroup>
+</Project>
