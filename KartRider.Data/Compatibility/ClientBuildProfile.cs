@@ -29,6 +29,8 @@ namespace KartRider.Compatibility
         public int P2pOffset { get; }
         public int MessengerOffset { get; }
         public ushort DefaultLoginTcpPort => AddOffset(DefaultConfiguredPort, LoginTcpOffset);
+        public ushort MaximumLoginTcpPort => checked((ushort)(
+            IPEndPoint.MaxPort - Math.Max(0, MessengerOffset - LoginTcpOffset)));
 
         public ClientPortTopology(
             ushort defaultConfiguredPort,
@@ -56,6 +58,14 @@ namespace KartRider.Compatibility
         public ushort ResolveP2pPort(ushort configuredPort) => AddOffset(ResolveConfiguredPort(configuredPort), P2pOffset);
 
         public ushort ResolveMessengerPort(ushort configuredPort) => AddOffset(ResolveConfiguredPort(configuredPort), MessengerOffset);
+
+        public ushort ResolveConfiguredPortFromLoginTcp(ushort loginTcpPort)
+        {
+            int result = loginTcpPort - LoginTcpOffset;
+            if (result < 1 || result > IPEndPoint.MaxPort)
+                throw new InvalidOperationException($"Invalid login TCP port: {loginTcpPort}");
+            return (ushort)result;
+        }
 
         private static ushort AddOffset(ushort port, int offset)
         {

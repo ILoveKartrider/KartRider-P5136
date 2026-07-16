@@ -45,6 +45,27 @@ namespace KartRider
             AiSpeed_comboBox.SelectedIndexChanged += AiSpeed_comboBox_SelectedIndexChanged;
         }
 
+        private void OnGameSettingsClosing(object sender, FormClosingEventArgs e)
+        {
+            string playerName = PlayerName.Text.Trim();
+            if (string.IsNullOrWhiteSpace(playerName))
+            {
+                MessageBox.Show(
+                    "기본 계정 이름을 입력하세요.",
+                    "게임 설정 오류",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                e.Cancel = true;
+                return;
+            }
+
+            ProfileService.SettingConfig.Name = playerName;
+            ProfileService.SettingConfig.SoloRank = SoloRank.Checked;
+            ProfileService.SettingConfig.EnableMod = EnableMod.Checked;
+            ProfileService.SaveSettings();
+            Program.LauncherDlg?.RefreshServerStatus();
+        }
+
         private static void LocalizeComboBoxItem(object sender, ListControlConvertEventArgs e)
         {
             if (e.ListItem is string internalName && KoreanDisplayNames.TryGetValue(internalName, out string displayName))
@@ -120,11 +141,11 @@ namespace KartRider
                 return;
             }
 
-            bool serverWasRunning = ClientServerRuntime.IsRunning;
-            bool serverConfigurationChanged =
-                !string.Equals(serverAddress.ToString(), ProfileService.SettingConfig.ServerIP, StringComparison.Ordinal) ||
-                serverPort != ProfileService.SettingConfig.ServerPort ||
-                !string.Equals(PlayerName.Text, ProfileService.SettingConfig.Name, StringComparison.Ordinal);
+            // Network settings belong to the P5136 server launcher (or to the
+            // connector on a client machine). Game-profile changes must never
+            // restart the server with the connector's shared legacy settings.
+            bool serverWasRunning = false;
+            bool serverConfigurationChanged = false;
 
             ProfileService.SettingConfig.Name = PlayerName.Text;
             ProfileService.SettingConfig.ServerIP = serverAddress.ToString();

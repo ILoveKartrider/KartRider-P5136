@@ -22,6 +22,20 @@ namespace KartRider.Common.Network
         private static bool _failureReported;
         private static long _sequence;
         private static DateTime _nextStartAttemptUtc = DateTime.MinValue;
+        private static bool _enabled;
+        private static string _logDirectory = Path.GetFullPath(
+            Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "logs"));
+
+        public static bool Enabled
+        {
+            get
+            {
+                lock (SyncRoot)
+                {
+                    return _enabled;
+                }
+            }
+        }
 
         public static string TracePath
         {
@@ -34,16 +48,22 @@ namespace KartRider.Common.Network
             }
         }
 
-        public static void Start(string baseDirectory = null)
+        public static void Configure(bool enabled, string logDirectory)
         {
             string startedPath = "";
             lock (SyncRoot)
             {
-                if (_writer == null)
-                {
-                    _nextStartAttemptUtc = DateTime.MinValue;
-                }
-                if (EnsureStartedLocked(baseDirectory))
+                CloseLocked();
+                _enabled = enabled;
+                _logDirectory = string.IsNullOrWhiteSpace(logDirectory)
+                    ? Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "logs"))
+                    : Path.GetFullPath(logDirectory);
+                _tracePath = "";
+                _failureReported = false;
+                _sequence = 0;
+                _nextStartAttemptUtc = DateTime.MinValue;
+
+                if (_enabled && EnsureStartedLocked())
                 {
                     startedPath = _tracePath;
                 }
@@ -52,6 +72,20 @@ namespace KartRider.Common.Network
             if (!string.IsNullOrEmpty(startedPath))
             {
                 SafeConsoleWrite($"[PACKET TRACE] Full RX/TX log: {startedPath}");
+            }
+        }
+
+        public static void Start(string logDirectory = null)
+        {
+            Configure(true, logDirectory);
+        }
+
+        public static void Stop()
+        {
+            lock (SyncRoot)
+            {
+                _enabled = false;
+                CloseLocked();
             }
         }
 
@@ -66,6 +100,11 @@ namespace KartRider.Common.Network
             string details = null,
             byte[] wirePacket = null)
         {
+            if (!Enabled)
+            {
+                return;
+            }
+
             try
             {
                 byte[] payload = packet ?? Array.Empty<byte>();
@@ -90,7 +129,7 @@ namespace KartRider.Common.Network
                         $" | len={payload.Length} | hash={hashText} | name={packetName}" +
                         $" | details={Normalize(details)}";
 
-                    if (EnsureStartedLocked(null))
+                    if (EnsureStartedLocked())
                     {
                         try
                         {
@@ -131,6 +170,11 @@ namespace KartRider.Common.Network
             string identity,
             string details)
         {
+            if (!Enabled)
+            {
+                return;
+            }
+
             try
             {
                 string timestamp = DateTimeOffset.Now.ToString("O", CultureInfo.InvariantCulture);
@@ -145,7 +189,7 @@ namespace KartRider.Common.Network
                         $" | remote={Normalize(remoteEndPoint?.ToString())} | id={Normalize(identity)}" +
                         $" | details={Normalize(details)}";
 
-                    if (EnsureStartedLocked(null))
+                    if (EnsureStartedLocked())
                     {
                         try
                         {
@@ -168,8 +212,13 @@ namespace KartRider.Common.Network
             }
         }
 
-        private static bool EnsureStartedLocked(string baseDirectory)
+        private static bool EnsureStartedLocked()
         {
+            if (!_enabled)
+            {
+                return false;
+            }
+
             if (_writer != null)
             {
                 return true;
@@ -184,11 +233,7 @@ namespace KartRider.Common.Network
             _nextStartAttemptUtc = now.AddSeconds(30);
             try
             {
-                string root = string.IsNullOrWhiteSpace(baseDirectory)
-                    ? AppDomain.CurrentDomain.BaseDirectory
-                    : Path.GetFullPath(baseDirectory);
-                string logDirectory = Path.Combine(root, "logs");
-                Directory.CreateDirectory(logDirectory);
+                Directory.CreateDirectory(_logDirectory);
 
                 int processId = Process.GetCurrentProcess().Id;
                 string stem = $"packet-trace_{DateTime.Now:yyyyMMdd_HHmmss_fff}_{processId}";
@@ -197,7 +242,7 @@ namespace KartRider.Common.Network
                 for (int attempt = 0; attempt < 100; attempt++)
                 {
                     selectedPath = Path.Combine(
-                        logDirectory,
+                        _logDirectory,
                         attempt == 0 ? stem + ".log" : $"{stem}_{attempt}.log");
                     try
                     {
@@ -234,7 +279,7 @@ namespace KartRider.Common.Network
                 if (!_processExitHooked)
                 {
                     _processExitHooked = true;
-                    AppDomain.CurrentDomain.ProcessExit += delegate { Close(); };
+                    AppDomain.CurrentDomain.ProcessExit += delegate { Stop(); };
                 }
 
                 return true;
@@ -246,22 +291,19 @@ namespace KartRider.Common.Network
             }
         }
 
-        private static void Close()
+        private static void CloseLocked()
         {
-            lock (SyncRoot)
+            try
             {
-                try
-                {
-                    _writer?.Flush();
-                    _writer?.Dispose();
-                }
-                catch
-                {
-                }
-                finally
-                {
-                    _writer = null;
-                }
+                _writer?.Flush();
+                _writer?.Dispose();
+            }
+            catch
+            {
+            }
+            finally
+            {
+                _writer = null;
             }
         }
 

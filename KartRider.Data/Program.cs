@@ -127,7 +127,7 @@ namespace KartRider
                 // This executable is the server launcher. IPv6 client-forwarding
                 // mode belonged to the old combined launcher and must never run
                 // here; unsupported listen addresses are reported by the host.
-                ClientServerRuntime.Start(rootDirectory);
+                Console.WriteLine("서버 설정을 확인한 뒤 UI에서 서버 시작을 누르세요.");
             }
             catch (System.Net.Sockets.SocketException)
             {

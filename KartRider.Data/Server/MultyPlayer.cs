@@ -31,28 +31,9 @@ public static class MultyPlayer
 
     public static IPEndPoint GetServerEndPoint(SessionGroup Parent)
     {
-        IPEndPoint serverEndPoint = Parent.Client.Socket.LocalEndPoint as IPEndPoint;
-        IPAddress clientEndPoint = ((IPEndPoint)Parent.Client.Socket.RemoteEndPoint).Address;
-        if (string.IsNullOrEmpty(RouterListener.ServerIP))
-        {
-            var ipInfo = Task.Run(async () => await Update.GetCountryAsync()).Result;
-            RouterListener.ServerIP = ipInfo?.Ip ?? "";
-        }
-        if (RouterListener.RouterIPList.Contains(clientEndPoint.ToString()) || LanIpGetter.IsInLocalSubnet(clientEndPoint.ToString()))
-        {
-            return serverEndPoint;
-        }
-        else if(!string.IsNullOrEmpty(RouterListener.ServerIP))
-        {
-            int serverPort = ClientBuildProfiles.Active.Ports.ResolveLoginTcpPort(ProfileService.SettingConfig.ServerPort);
-            return new IPEndPoint(IPAddress.Parse(RouterListener.ServerIP), serverPort);
-        }
-        else
-        {
-            string serverIP = LanIpGetter.IsIPv6(ProfileService.SettingConfig.ServerIP) ? "127.0.0.1" : ProfileService.SettingConfig.ServerIP;
-            int serverPort = ClientBuildProfiles.Active.Ports.ResolveLoginTcpPort(ProfileService.SettingConfig.ServerPort);
-            return new IPEndPoint(IPAddress.Parse(serverIP), serverPort);
-        }
+        int serverPort = ClientBuildProfiles.Active.Ports.ResolveLoginTcpPort(
+            ClientServerRuntime.ConfiguredPort);
+        return new IPEndPoint(ClientServerRuntime.AdvertisedAddress, serverPort);
     }
 
     public static uint ConvertTick()
@@ -528,8 +509,8 @@ public static class MultyPlayer
                 {
                     oPacket.WriteByte(1);
                     ClientPortTopology ports = ClientBuildProfiles.Active.Ports;
-                    oPacket.WriteEndPoint(IPAddress.Any, ports.ResolveUdpPort(ProfileService.SettingConfig.ServerPort));
-                    oPacket.WriteEndPoint(IPAddress.Any, ports.ResolveP2pPort(ProfileService.SettingConfig.ServerPort));
+                    oPacket.WriteEndPoint(IPAddress.Any, ports.ResolveUdpPort(ClientServerRuntime.ConfiguredPort));
+                    oPacket.WriteEndPoint(IPAddress.Any, ports.ResolveP2pPort(ClientServerRuntime.ConfiguredPort));
                     Parent.Client.Send(oPacket);
                 }
             }

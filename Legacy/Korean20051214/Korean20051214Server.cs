@@ -1,5 +1,7 @@
 using System;
 using System.IO;
+using System.Net;
+using System.Net.Sockets;
 using Set_Data;
 
 namespace KartRider.Legacy.Korean20051214;
@@ -11,6 +13,8 @@ namespace KartRider.Legacy.Korean20051214;
 /// </summary>
 public sealed class Korean20051214Options
 {
+	public string BindIP { get; set; } = "127.0.0.1";
+
 	public string ServerIP { get; set; } = "127.0.0.1";
 
 	public int TcpPort { get; set; } = 39312;
@@ -89,6 +93,7 @@ public static class Korean20051214Server
 	{
 		Start(new Korean20051214Options
 		{
+			BindIP = serverIP,
 			ServerIP = serverIP,
 			TcpPort = tcpPort,
 			UdpPort = udpPort,
@@ -110,7 +115,7 @@ public static class Korean20051214Server
 
 			Validate(options);
 			ApplyProfile(options);
-			RouterListener.Start(options.ServerIP, options.TcpPort, options.UdpPort);
+			RouterListener.Start(options.BindIP, options.ServerIP, options.TcpPort, options.UdpPort);
 		}
 	}
 
@@ -168,9 +173,22 @@ public static class Korean20051214Server
 
 	private static void Validate(Korean20051214Options options)
 	{
+		if (!IPAddress.TryParse(options.BindIP, out IPAddress bindAddress) ||
+			bindAddress.AddressFamily != AddressFamily.InterNetwork)
+		{
+			throw new ArgumentException("The bind IP must be an IPv4 address.", nameof(options));
+		}
+
 		if (string.IsNullOrWhiteSpace(options.ServerIP))
 		{
 			throw new ArgumentException("A server IP address is required.", nameof(options));
+		}
+
+		if (!IPAddress.TryParse(options.ServerIP, out IPAddress advertisedAddress) ||
+			advertisedAddress.AddressFamily != AddressFamily.InterNetwork ||
+			advertisedAddress.Equals(IPAddress.Any))
+		{
+			throw new ArgumentException("The advertised server IP must be a concrete IPv4 address.", nameof(options));
 		}
 
 		if (options.TcpPort is < 1 or > 65535)

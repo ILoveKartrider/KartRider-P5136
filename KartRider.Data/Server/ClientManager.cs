@@ -49,9 +49,10 @@ public static class ClientManager
             // localhost server the new socket can otherwise receive
             // PcFirstMessage within 1-2 ms, before that reset has finished;
             // the packet is discarded and the UI thread waits in the client's
-            // ten-second polling loop. Real network latency (and the working
-            // trace, which had a roughly 49 ms migration gap) masks this race.
-            Task.Delay(100).GetAwaiter().GetResult();
+            // ten-second polling loop. A 100 ms delay was still racy when the
+            // advertised endpoint used the LAN address, so keep a conservative
+            // margin before sending the server-first handshake.
+            Task.Delay(250).GetAwaiter().GetResult();
         }
 
         uint IV = GameSupport.PcFirstMessageAsync(session);
@@ -106,6 +107,24 @@ public static class ClientManager
     public static ICollection<SessionGroup> GetClients()
     {
         return _clientSessions.Values;
+    }
+
+    public static void DisconnectAll()
+    {
+        SessionGroup[] sessions = _clientSessions.Values.ToArray();
+        foreach (SessionGroup session in sessions)
+        {
+            try
+            {
+                session.Client.Disconnect();
+            }
+            catch (Exception exception)
+            {
+                Console.WriteLine($"Unable to disconnect a client during shutdown: {exception.Message}");
+            }
+        }
+
+        _clientSessions.Clear();
     }
 
     public static SessionGroup GetParent(string nickname)

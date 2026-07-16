@@ -116,10 +116,15 @@ internal class RouterListener
 
 	public static void Start()
 	{
-		Start(sIP, 39312, 39312);
+		Start("127.0.0.1", string.IsNullOrWhiteSpace(sIP) ? "127.0.0.1" : sIP, 39312, 39312);
 	}
 
 	public static void Start(string serverIP, int tcpPort, int udpPort)
+	{
+		Start("0.0.0.0", serverIP, tcpPort, udpPort);
+	}
+
+	public static void Start(string bindIP, string serverIP, int tcpPort, int udpPort)
 	{
 		lock (SyncRoot)
 		{
@@ -128,6 +133,7 @@ internal class RouterListener
 				throw new InvalidOperationException("The legacy listener is already running.");
 			}
 
+			IPAddress bindAddress = IPAddress.Parse(bindIP);
 			IPAddress serverAddress = IPAddress.Parse(serverIP);
 			_nextSessionOrdinal = 0;
 			StoredProfilesByUserNo.Clear();
@@ -141,8 +147,8 @@ internal class RouterListener
 			UdpPort = udpPort;
 			Console.WriteLine("Load server IP : {0}:{1}", sIP, TcpPort);
 			ForceConnect = "";
-			TcpListener listener = new TcpListener(IPAddress.Any, TcpPort);
-			LegacyUdpServer udpServer = new LegacyUdpServer(UdpPort);
+			TcpListener listener = new TcpListener(bindAddress, TcpPort);
+			LegacyUdpServer udpServer = new LegacyUdpServer(bindAddress, UdpPort);
 			Listener = listener;
 			try
 			{

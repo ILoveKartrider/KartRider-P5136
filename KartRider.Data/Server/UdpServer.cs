@@ -20,6 +20,7 @@ namespace KartRider
     {
         // UDP核心通信对象
         private UdpClient _udpClient;
+        private readonly IPAddress _bindAddress;
         // 监听端口
         private readonly int _listenPort;
         // 服务端名称（日志区分多实例）
@@ -35,12 +36,17 @@ namespace KartRider
         /// </summary>
         /// <param name="serverName">服务端名称（日志区分）</param>
         /// <param name="listenPort">监听端口（唯一）</param>
-        public UdpServer(string serverName, int listenPort)
+        public UdpServer(string serverName, IPAddress bindAddress, int listenPort)
         {
             _serverName = serverName;
+            _bindAddress = bindAddress ?? throw new ArgumentNullException(nameof(bindAddress));
             _listenPort = listenPort;
             _isRunning = false;
         }
+
+        public bool IsRunning => _isRunning;
+
+        public IPEndPoint LocalEndPoint => _udpClient?.Client?.LocalEndPoint as IPEndPoint;
 
         /// <summary>
         /// 启动UDP服务端
@@ -58,7 +64,7 @@ namespace KartRider
                 try
                 {
                     // 初始化UDP客户端并绑定端口
-                    _udpClient = new UdpClient(_listenPort);
+                    _udpClient = new UdpClient(new IPEndPoint(_bindAddress, _listenPort));
 
                     // 禁用 UDP Socket 的 ConnectionReset 错误（Windows 特有）
                     // 当向未监听端口发送 UDP 时，远程返回 ICMP Port Unreachable，
@@ -79,11 +85,17 @@ namespace KartRider
                 {
                     Console.WriteLine($"[{_serverName}] 启动失败：{ex.Message}（端口可能被占用）");
                     _isRunning = false;
+                    _udpClient?.Dispose();
+                    _udpClient = null;
+                    throw;
                 }
                 catch (Exception ex)
                 {
                     Console.WriteLine($"[{_serverName}] 启动异常：{ex.Message}");
                     _isRunning = false;
+                    _udpClient?.Dispose();
+                    _udpClient = null;
+                    throw;
                 }
             }
         }
@@ -118,6 +130,7 @@ namespace KartRider
                     // 释放资源
                     _udpClient?.Dispose();
                     _udpClient = null;
+                    udpClients.Clear();
                 }
             }
         }

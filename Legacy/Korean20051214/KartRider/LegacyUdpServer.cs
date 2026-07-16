@@ -16,12 +16,19 @@ internal sealed class LegacyUdpServer : IDisposable
 {
 	private const uint DatagramChecksumXor = 0x4F3816C3u;
 	private readonly object _syncRoot = new object();
+	private readonly IPAddress _bindAddress;
 	private readonly int _port;
 	private UdpClient _client;
 	private bool _running;
 
 	public LegacyUdpServer(int port)
+		: this(IPAddress.Any, port)
 	{
+	}
+
+	public LegacyUdpServer(IPAddress bindAddress, int port)
+	{
+		_bindAddress = bindAddress ?? throw new ArgumentNullException(nameof(bindAddress));
 		_port = port;
 	}
 
@@ -34,7 +41,7 @@ internal sealed class LegacyUdpServer : IDisposable
 				return;
 			}
 
-			UdpClient client = new UdpClient(new IPEndPoint(IPAddress.Any, _port));
+			UdpClient client = new UdpClient(new IPEndPoint(_bindAddress, _port));
 			try
 			{
 				const int SioUdpConnectionReset = -1744830452;
@@ -51,7 +58,7 @@ internal sealed class LegacyUdpServer : IDisposable
 			_client = client;
 			_running = true;
 			BeginReceive(client);
-			LegacyPacketTrace.LogEvent($"[2005 UDP] Listening on 0.0.0.0:{_port}.");
+			LegacyPacketTrace.LogEvent($"[2005 UDP] Listening on {_bindAddress}:{_port}.");
 		}
 	}
 

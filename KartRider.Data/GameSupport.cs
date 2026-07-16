@@ -413,7 +413,7 @@ namespace KartRider
                 outPacket.WriteByte(5);//Level
                 outPacket.WriteEndPoint(
                     server.Address,
-                    ClientBuildProfiles.Active.Ports.ResolveMessengerPort(ProfileService.SettingConfig.ServerPort));
+                    ClientBuildProfiles.Active.Ports.ResolveMessengerPort(ClientServerRuntime.ConfiguredPort));
                 Parent.Client.Send(outPacket);
             }
         }

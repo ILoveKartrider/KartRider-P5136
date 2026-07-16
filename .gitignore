@@ -16,6 +16,7 @@ TestResults/
 
 # Runtime configuration and persistent state
 /data/
+/ServerData/
 /logs/
 /Profile/
 Settings.json

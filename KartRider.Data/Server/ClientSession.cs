@@ -2875,8 +2875,8 @@ namespace KartRider
                             }
                             outPacket.WriteByte(0);
                             ClientPortTopology ports = ClientBuildProfiles.Active.Ports;
-                            outPacket.WriteEndPoint(IPAddress.Any, ports.ResolveUdpPort(ProfileService.SettingConfig.ServerPort));
-                            outPacket.WriteEndPoint(IPAddress.Any, ports.ResolveP2pPort(ProfileService.SettingConfig.ServerPort));
+                            outPacket.WriteEndPoint(IPAddress.Any, ports.ResolveUdpPort(ClientServerRuntime.ConfiguredPort));
+                            outPacket.WriteEndPoint(IPAddress.Any, ports.ResolveP2pPort(ClientServerRuntime.ConfiguredPort));
                             outPacket.WriteByte(0);
                             outPacket.WriteByte(0);
                             outPacket.WriteByte((byte)(PcMsgPassport ? 1 : 0));

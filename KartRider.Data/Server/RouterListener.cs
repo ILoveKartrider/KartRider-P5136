@@ -48,6 +48,16 @@ namespace KartRider
                     return;
 
                 Socket clientSocket = RouterListener.Listener.EndAcceptSocket(ar);
+                Console.WriteLine(
+                    $"[LOGIN TCP] accepted local={clientSocket.LocalEndPoint}, " +
+                    $"remote={clientSocket.RemoteEndPoint}");
+                PacketTrace.LogEvent(
+                    "LOGIN-TCP",
+                    "ACCEPT",
+                    clientSocket.LocalEndPoint,
+                    clientSocket.RemoteEndPoint,
+                    "",
+                    "client accepted");
 
                 // 创建客户端会话（自动开始接收消息）
                 RouterListener.MySession = new SessionGroup(clientSocket, null);
@@ -81,20 +91,37 @@ namespace KartRider
             }
         }
 
-        public static void Start()
+        public static bool IsRunning =>
+            Listener?.Server?.IsBound == true &&
+            UDPServer?.IsRunning == true &&
+            P2PServer?.IsRunning == true &&
+            MsgrServer?.IsRunning == true;
+
+        public static bool HasResources =>
+            Listener != null ||
+            UDPServer?.IsRunning == true ||
+            P2PServer?.IsRunning == true ||
+            MsgrServer?.IsRunning == true;
+
+        public static void Start(P5136ServerOptions options)
         {
-            PacketTrace.Start(FileName.appDir);
+            if (options == null)
+                throw new ArgumentNullException(nameof(options));
+
+            options.Validate(ClientBuildProfiles.Active);
+            PacketTrace.Configure(options.EnablePacketTrace, options.LogDirectory);
 
             ClientPortTopology ports = ClientBuildProfiles.Active.Ports;
-            ushort configuredPort = ProfileService.SettingConfig.ServerPort;
+            ushort configuredPort = options.ConfiguredPort;
             ushort loginPort = ports.ResolveLoginTcpPort(configuredPort);
             ushort udpPort = ports.ResolveUdpPort(configuredPort);
             ushort p2pPort = ports.ResolveP2pPort(configuredPort);
             ushort messengerPort = ports.ResolveMessengerPort(configuredPort);
 
-            UDPServer = new UdpServer("UDP", udpPort);
-            P2PServer = new UdpServer("P2P", p2pPort);
-            MsgrServer = new MsgrServer("MsgrServer", messengerPort);
+            UDPServer = new UdpServer("UDP", options.BindAddress, udpPort);
+            P2PServer = new UdpServer("P2P", options.BindAddress, p2pPort);
+            MsgrServer = new MsgrServer("MsgrServer", options.BindAddress, messengerPort);
+            ServerIP = options.AdvertisedAddress.ToString();
 
             // 启动服务端
             UDPServer.Start();
@@ -103,18 +130,16 @@ namespace KartRider
 
             if (RouterListener.Listener == null)
             {
-                RouterListener.Listener = new TcpListener(IPAddress.Any, loginPort);
+                RouterListener.Listener = new TcpListener(options.BindAddress, loginPort);
             }
             if (!RouterListener.Listener.Server.IsBound)
             {
                 RouterIPList = new List<string>();
                 RouterIPList = LanIpGetter.GetAllLocalLanIps();
                 RouterIPList.Add("127.0.0.1");
-                var ipInfo = Task.Run(async () => await Update.GetCountryAsync()).Result;
-                string ip = ipInfo?.Ip ?? "";
-                if (!string.IsNullOrEmpty(ip))
+                if (!RouterIPList.Contains(ServerIP))
                 {
-                    RouterIPList.Add(ip);
+                    RouterIPList.Add(ServerIP);
                 }
                 foreach (var IP in RouterIPList)
                 {
@@ -127,10 +152,9 @@ namespace KartRider
             {
                 RouterListener.Listener.BeginAcceptSocket(OnAcceptSocket, RouterListener.Listener);
             }
-            if (LanIpGetter.CheckHasPublicIpv6())
-            {
-                TinyMapper.Start();
-            }
+            Console.WriteLine(
+                $"[SERVER] bind={options.BindAddress}; advertise={options.AdvertisedAddress}; " +
+                $"login-tcp={loginPort}; udp={udpPort}; p2p-udp={p2pPort}; messenger-tcp={messengerPort}");
         }
 
         /// <summary>
@@ -141,9 +165,12 @@ namespace KartRider
             // 停止 UDP 服务
             UDPServer?.Stop();
             P2PServer?.Stop();
+            UDPServer = null;
+            P2PServer = null;
 
             // 停止 TCP 消息服务
             MsgrServer?.Stop();
+            MsgrServer = null;
 
             // 停止 TCP 监听器
             if (Listener != null)
@@ -159,8 +186,15 @@ namespace KartRider
                 Listener = null;
             }
 
+            ClientManager.DisconnectAll();
+            MySession = null;
+            RouterIPList.Clear();
+            ServerIP = "";
+
             // 停止 TinyMapper 端口转发
             TinyMapper.Stop();
+
+            PacketTrace.Stop();
 
             Console.WriteLine("[RouterListener] 所有服务已停止");
         }

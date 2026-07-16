@@ -21,6 +21,7 @@ namespace KartRider
     {
         // TCP核心通信对象
         private TcpListener _tcpListener;
+        private readonly IPAddress _bindAddress;
         // 监听端口
         private readonly int _listenPort;
         // 服务端名称（日志区分多实例）
@@ -29,6 +30,8 @@ namespace KartRider
         private volatile bool _isRunning;
         // 同步锁（防止重复启动/停止）
         private readonly object _lockObj = new object();
+        private readonly ConcurrentDictionary<TcpClient, byte> _acceptedClients =
+            new ConcurrentDictionary<TcpClient, byte>();
 
         public static ConcurrentDictionary<string, ClientState> Clients = new ConcurrentDictionary<string, ClientState>();
         public static ConcurrentDictionary<uint, List<string>> rooms = new ConcurrentDictionary<uint, List<string>>();
@@ -39,12 +42,17 @@ namespace KartRider
         /// </summary>
         /// <param name="serverName">服务端名称（日志区分）</param>
         /// <param name="listenPort">监听端口（唯一）</param>
-        public MsgrServer(string serverName, int listenPort)
+        public MsgrServer(string serverName, IPAddress bindAddress, int listenPort)
         {
             _serverName = serverName;
+            _bindAddress = bindAddress ?? throw new ArgumentNullException(nameof(bindAddress));
             _listenPort = listenPort;
             _isRunning = false;
         }
+
+        public bool IsRunning => _isRunning;
+
+        public IPEndPoint LocalEndPoint => _tcpListener?.LocalEndpoint as IPEndPoint;
 
         /// <summary>
         /// 启动TCP服务端
@@ -62,7 +70,7 @@ namespace KartRider
                 try
                 {
                     // 初始化TCP监听器并绑定端口
-                    _tcpListener = new TcpListener(IPAddress.Any, _listenPort);
+                    _tcpListener = new TcpListener(_bindAddress, _listenPort);
                     _tcpListener.Start();
                     _isRunning = true;
 
@@ -76,11 +84,19 @@ namespace KartRider
                 {
                     Console.WriteLine($"[{_serverName}] 启动失败：{ex.Message}（端口可能被占用）");
                     _isRunning = false;
+                    _tcpListener?.Stop();
+                    CloseAcceptedClients();
+                    _tcpListener = null;
+                    throw;
                 }
                 catch (Exception ex)
                 {
                     Console.WriteLine($"[{_serverName}] 启动异常：{ex.Message}");
                     _isRunning = false;
+                    _tcpListener?.Stop();
+                    CloseAcceptedClients();
+                    _tcpListener = null;
+                    throw;
                 }
             }
         }
@@ -94,6 +110,7 @@ namespace KartRider
             {
                 if (!_isRunning)
                 {
+                    CloseAcceptedClients();
                     Console.WriteLine($"[{_serverName}] 服务端未启动，无需停止");
                     return;
                 }
@@ -114,8 +131,28 @@ namespace KartRider
                 {
                     // 释放资源
                     _tcpListener = null;
+                    CloseAcceptedClients();
                 }
             }
+        }
+
+        private void CloseAcceptedClients()
+        {
+            foreach (TcpClient client in _acceptedClients.Keys.ToArray())
+            {
+                try
+                {
+                    client.Close();
+                }
+                catch
+                {
+                }
+            }
+
+            _acceptedClients.Clear();
+            Clients.Clear();
+            rooms.Clear();
+            roomID = 1;
         }
 
         /// <summary>
@@ -161,6 +198,7 @@ namespace KartRider
             {
                 // 结束异步接受连接，获取客户端
                 client = _tcpListener.EndAcceptTcpClient(ar);
+                _acceptedClients.TryAdd(client, 0);
                 Console.WriteLine($"[{_serverName}] 客户端连接成功：{client.Client.RemoteEndPoint}");
 
                 // 为每个客户端创建一个缓冲区并开始异步接收数据
@@ -579,6 +617,10 @@ namespace KartRider
             try
             {
                 clientState.Client?.Close();
+                if (clientState.Client != null)
+                {
+                    _acceptedClients.TryRemove(clientState.Client, out _);
+                }
                 var disconnectedNicknames = Clients.Where(kv => kv.Value == clientState).Select(kv => kv.Key).ToList();
                 foreach (var nickname in disconnectedNicknames)
                 {

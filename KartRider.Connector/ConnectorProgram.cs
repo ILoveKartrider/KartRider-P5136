@@ -22,7 +22,7 @@ namespace KartRider.Connector
                 if (!File.Exists(Path.Combine(gameDirectory, "KartRider.exe")))
                 {
                     MessageBox.Show(
-                        "접속기를 KartRider.exe가 있는 5136 게임 폴더에 두세요.",
+                        "접속기를 KartRider.exe가 있는 P5136 게임 폴더에 놓으세요.",
                         "게임 파일 없음",
                         MessageBoxButtons.OK,
                         MessageBoxIcon.Error);
@@ -32,7 +32,7 @@ namespace KartRider.Connector
                 if (profile.Build != ClientBuild.Korean5136)
                 {
                     MessageBox.Show(
-                        $"5136 클라이언트를 확인할 수 없습니다.\n감지 결과: {profile.DisplayName}",
+                        $"P5136 클라이언트를 확인할 수 없습니다.\n감지 결과: {profile.DisplayName}",
                         "지원하지 않는 클라이언트",
                         MessageBoxButtons.OK,
                         MessageBoxIcon.Error);
@@ -42,10 +42,10 @@ namespace KartRider.Connector
                 ProfileService.LoadSettings();
                 Application.Run(new ConnectorForm(gameDirectory, profile));
             }
-            catch (Exception ex)
+            catch (Exception exception)
             {
                 MessageBox.Show(
-                    $"접속기를 시작하지 못했습니다.\n{ex.Message}",
+                    $"접속기를 시작하지 못했습니다.\n{exception.Message}",
                     "접속기 오류",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Error);

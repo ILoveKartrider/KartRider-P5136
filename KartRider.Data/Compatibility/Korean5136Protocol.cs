@@ -750,7 +750,7 @@ public static class Korean5136Protocol
         uint userNo = ClientManager.GetUserNO(nickname);
         IPAddress serverAddress = GetLegacyServerAddress();
         ClientPortTopology ports = ClientBuildProfiles.Active.Ports;
-        ushort configuredPort = ProfileService.SettingConfig.ServerPort;
+        ushort configuredPort = ClientServerRuntime.ConfiguredPort;
 
         GameDataReset.DataReset(nickname);
         using OutPacket response = new OutPacket("PrLogin");
@@ -1039,12 +1039,7 @@ public static class Korean5136Protocol
 
     private static IPAddress GetLegacyServerAddress()
     {
-        if (IPAddress.TryParse(ProfileService.SettingConfig.ServerIP, out IPAddress address) &&
-            address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
-        {
-            return address;
-        }
-        return IPAddress.Loopback;
+        return ClientServerRuntime.AdvertisedAddress;
     }
 
     private static int GetPremiumPoints(int premium) => premium switch

@@ -5,8 +5,6 @@ using LegacyServer = Korean20051214Legacy::KartRider.Legacy.Korean20051214.Korea
 using Profile;
 using System;
 using System.IO;
-using System.Net;
-using System.Net.Sockets;
 
 namespace KartRider.Compatibility;
 
@@ -17,7 +15,7 @@ public static class Korean20051214ServerHost
 {
     public static bool IsRunning => LegacyServer.IsRunning;
 
-    public static void Start(string gameDirectory)
+    public static void Start(string gameDirectory, P5136ServerOptions serverOptions)
     {
         ClientBuildProfile build = ClientBuildProfiles.Active;
         if (build.Build != ClientBuild.Korean20051214)
@@ -27,19 +25,16 @@ public static class Korean20051214ServerHost
         if (string.IsNullOrWhiteSpace(username))
             username = "WIZONE";
 
-        string serverIp = ProfileService.SettingConfig.ServerIP;
-        if (!IPAddress.TryParse(serverIp, out IPAddress address) || address.AddressFamily != AddressFamily.InterNetwork)
-            throw new InvalidOperationException("The Korean 2005 client requires an IPv4 server address.");
-
         ProfileConfig config = ProfileService.GetProfileConfig(username);
         Profile.RiderData rider = config.Rider;
         Profile.RiderItemData item = config.RiderItem;
 
         LegacyOptions options = new LegacyOptions
         {
-            ServerIP = address.ToString(),
-            TcpPort = build.Ports.ResolveLoginTcpPort(ProfileService.SettingConfig.ServerPort),
-            UdpPort = build.Ports.ResolveUdpPort(ProfileService.SettingConfig.ServerPort),
+            BindIP = serverOptions.BindAddress.ToString(),
+            ServerIP = serverOptions.AdvertisedAddress.ToString(),
+            TcpPort = build.Ports.ResolveLoginTcpPort(serverOptions.ConfiguredPort),
+            UdpPort = build.Ports.ResolveUdpPort(serverOptions.ConfiguredPort),
             Username = username,
             Nickname = username,
             Lucci = rider.Lucci,
