@@ -32,6 +32,9 @@ public static class ClientServerRuntime
 
     public static ushort ConfiguredPort => CurrentOptions.ConfiguredPort;
 
+    public static int FirstMessageDelayMilliseconds =>
+        CurrentOptions.FirstMessageDelayMilliseconds;
+
     public static void Start(string gameDirectory, P5136ServerOptions options)
     {
         if (IsRunning)
@@ -64,6 +67,16 @@ public static class ClientServerRuntime
                 return;
             }
 
+            ItemProbabilityService.Configure(
+                gameDirectory,
+                new ItemProbabilityConfiguration
+                {
+                    RankBand = snapshot.ItemProbabilityRankBand,
+                    Individual = ItemProbabilityConfiguration.CloneEntries(
+                        snapshot.IndividualItemProbabilities),
+                    Team = ItemProbabilityConfiguration.CloneEntries(
+                        snapshot.TeamItemProbabilities)
+                });
             RouterListener.Start(snapshot);
         }
         catch
@@ -104,7 +117,7 @@ public static class ClientServerRuntime
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Unable to stop the current server: {ex.Message}");
+            Console.WriteLine($"현재 서버 중지 실패: {ex.Message}");
         }
     }
 

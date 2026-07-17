@@ -14,9 +14,9 @@ namespace KartRider
     {
         private static readonly IReadOnlyDictionary<string, string> KoreanDisplayNames = new Dictionary<string, string>
         {
-            ["国服"] = "중국 서버",
-            ["国服复古"] = "중국 클래식",
-            ["韩服复古"] = "한국 클래식",
+            ["国服"] = "중국 현행 물리",
+            ["国服复古"] = "중국 클래식 물리",
+            ["韩服复古"] = "한국 클래식 물리",
             ["标准"] = "표준",
             ["慢速"] = "느림",
             ["普通"] = "보통",
@@ -29,6 +29,12 @@ namespace KartRider
             ["困难"] = "어려움",
             ["地狱"] = "지옥"
         };
+
+        private const string RoomNameKeywordHelp =
+            "방 이름 키워드 (위 서버 설정보다 우선)\r\n" +
+            "현행: S0=느림 · S1=보통 · S2=빠름 · S3=매우 빠름\r\n" +
+            "특수: S4=무한부스터 · S5=CGS LTE · S6=진·무한부스터 · S7/S8=표준\r\n" +
+            "클래식: BEGINNER · ROOKIE · L3 · L2 · L1 · PRO (한국 물리: KR 추가)";
 
         public string[] AiSpeed = new string[] { "简单", "困难", "地狱" };
 
@@ -241,7 +247,8 @@ namespace KartRider
 
                 PhysicsNote_label.Text = ClientBuildProfiles.Active.Build == ClientBuild.Korean20051214
                     ? "※ 물리 프리셋과 속도 등급은 2005 싱글플레이에 적용되지 않습니다."
-                    : "※ 클라이언트 버전이 아니라 서버의 주행 물리 설정입니다.";
+                    : "※ 서버가 경기 시작 패킷으로 전달하는 주행 물리 설정입니다.";
+                RoomNameKeyword_label.Text = RoomNameKeywordHelp;
             }
             finally
             {

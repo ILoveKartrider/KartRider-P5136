@@ -43,7 +43,7 @@ namespace KartRider
             ushort p2pPort = ports.ResolveP2pPort(configuredPort);
             ushort messengerPort = ports.ResolveMessengerPort(configuredPort);
 
-            Console.WriteLine($"[TinyMapper] 启动 IPv6→IPv4 端口转发");
+            Console.WriteLine("[포트 전달] IPv6→IPv4 포트 전달 시작");
 
             // === port: TCP ===
             AddTcpForward(localIPv6, remoteIPv4, loginPort, ct);
@@ -77,7 +77,7 @@ namespace KartRider
             ushort p2pPort = ports.ResolveP2pPort(configuredPort);
             ushort messengerPort = ports.ResolveMessengerPort(configuredPort);
 
-            Console.WriteLine($"[TinyMapper] 启动 IPv4→IPv6 端口转发");
+            Console.WriteLine("[포트 전달] IPv4→IPv6 포트 전달 시작");
 
             // === port: TCP ===
             AddTcpForward(localIPv4, remoteIPv6, loginPort, ct);
@@ -108,7 +108,7 @@ namespace KartRider
                 }
                 _listeners.Clear();
             }
-            Console.WriteLine("[TinyMapper] 所有端口转发已停止");
+            Console.WriteLine("[포트 전달] 모든 포트 전달이 중지되었습니다.");
         }
 
         #region 启动转发

@@ -48,11 +48,18 @@ namespace KartRider.Common.Utilities
 			}
 		}
 
+		public bool Prepared
+		{
+			get;
+			private set;
+		}
+
 		public ByteArraySegment(byte[] pBuffer, bool pEncrypted)
 		{
 			this.mBuffer = pBuffer;
 			this.mLength = (int)this.mBuffer.Length;
 			this.mEncrypted = pEncrypted;
+			this.Prepared = false;
 		}
 
 		public ByteArraySegment(byte[] pBuffer, int pStart, int pLength)
@@ -60,6 +67,20 @@ namespace KartRider.Common.Utilities
 			this.mBuffer = pBuffer;
 			this.mStart = pStart;
 			this.mLength = pLength;
+			this.Prepared = true;
+		}
+
+		public void Prepare(byte[] pBuffer)
+		{
+			if (this.Prepared)
+			{
+				throw new InvalidOperationException("The send segment is already prepared.");
+			}
+
+			this.mBuffer = pBuffer ?? throw new ArgumentNullException(nameof(pBuffer));
+			this.mStart = 0;
+			this.mLength = pBuffer.Length;
+			this.Prepared = true;
 		}
 
 		public bool Advance(int pLength)

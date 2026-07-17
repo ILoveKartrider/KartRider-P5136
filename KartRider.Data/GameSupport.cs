@@ -73,7 +73,9 @@ namespace KartRider
                 outPacket.WriteString(key.key1);
                 outPacket.WriteBytes(new byte[31]);
                 outPacket.WriteString(key.key2);
-                Parent.Client.Send(outPacket);
+                Parent.Client.SendInitialHandshake(
+                    outPacket,
+                    key.first_val ^ key.second_val);
             }
             return key.first_val ^ key.second_val;
         }

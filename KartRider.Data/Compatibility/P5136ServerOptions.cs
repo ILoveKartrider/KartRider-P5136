@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
@@ -24,11 +25,22 @@ namespace KartRider.Compatibility
 
         public bool EnablePacketTrace { get; set; } = true;
 
+        public int FirstMessageDelayMilliseconds { get; set; } = 250;
+
+        public ItemProbabilityRankBand ItemProbabilityRankBand { get; set; } =
+            ItemProbabilityRankBand.Live;
+
+        public List<ItemProbabilityEntry> IndividualItemProbabilities { get; set; } =
+            new List<ItemProbabilityEntry>();
+
+        public List<ItemProbabilityEntry> TeamItemProbabilities { get; set; } =
+            new List<ItemProbabilityEntry>();
+
         public void Validate(ClientBuildProfile profile = null)
         {
             if (BindAddress == null || BindAddress.AddressFamily != AddressFamily.InterNetwork)
             {
-                throw new ArgumentException("The bind address must be an IPv4 address.", nameof(BindAddress));
+                throw new ArgumentException("수신 주소는 IPv4 주소여야 합니다.", nameof(BindAddress));
             }
 
             if (AdvertisedAddress == null ||
@@ -36,14 +48,32 @@ namespace KartRider.Compatibility
                 IPAddress.Any.Equals(AdvertisedAddress))
             {
                 throw new ArgumentException(
-                    "The advertised address must be a concrete IPv4 address (not 0.0.0.0).",
+                    "광고 주소에는 0.0.0.0이 아닌 실제 IPv4 주소를 입력해야 합니다.",
                     nameof(AdvertisedAddress));
             }
 
             if (string.IsNullOrWhiteSpace(LogDirectory))
             {
-                throw new ArgumentException("A log directory is required.", nameof(LogDirectory));
+                throw new ArgumentException("로그 폴더를 지정해야 합니다.", nameof(LogDirectory));
             }
+
+            if (FirstMessageDelayMilliseconds < 0 || FirstMessageDelayMilliseconds > 5000)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(FirstMessageDelayMilliseconds),
+                    "초기 핸드셰이크 지연은 0~5000ms 범위여야 합니다.");
+            }
+
+            ItemProbabilityService.Validate(
+                new ItemProbabilityConfiguration
+                {
+                    RankBand = ItemProbabilityRankBand,
+                    Individual = ItemProbabilityConfiguration.CloneEntries(
+                        IndividualItemProbabilities),
+                    Team = ItemProbabilityConfiguration.CloneEntries(
+                        TeamItemProbabilities)
+                },
+                allowEmptyTables: true);
 
             _ = Path.GetFullPath(LogDirectory);
 
@@ -62,7 +92,13 @@ namespace KartRider.Compatibility
                 AdvertisedAddress = AdvertisedAddress,
                 ConfiguredPort = ConfiguredPort,
                 LogDirectory = Path.GetFullPath(LogDirectory),
-                EnablePacketTrace = EnablePacketTrace
+                EnablePacketTrace = EnablePacketTrace,
+                FirstMessageDelayMilliseconds = FirstMessageDelayMilliseconds,
+                ItemProbabilityRankBand = ItemProbabilityRankBand,
+                IndividualItemProbabilities = ItemProbabilityConfiguration.CloneEntries(
+                    IndividualItemProbabilities),
+                TeamItemProbabilities = ItemProbabilityConfiguration.CloneEntries(
+                    TeamItemProbabilities)
             };
         }
     }

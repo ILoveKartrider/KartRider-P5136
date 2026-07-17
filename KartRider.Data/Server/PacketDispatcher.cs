@@ -106,7 +106,7 @@ namespace KartRider
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"[PacketDispatcher] Handler '{handler.Name}' 异常: {ex.Message}");
+                    Console.WriteLine($"[패킷 처리] 처리기 '{handler.Name}' 오류: {ex.Message}");
                 }
             }
 

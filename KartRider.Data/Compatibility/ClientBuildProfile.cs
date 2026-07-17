@@ -3,6 +3,7 @@ using KartRider.Common.Security;
 using KartRider.IO.Packet;
 using Profile;
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
@@ -63,7 +64,7 @@ namespace KartRider.Compatibility
         {
             int result = loginTcpPort - LoginTcpOffset;
             if (result < 1 || result > IPEndPoint.MaxPort)
-                throw new InvalidOperationException($"Invalid login TCP port: {loginTcpPort}");
+                throw new InvalidOperationException($"올바르지 않은 로그인 TCP 포트: {loginTcpPort}");
             return (ushort)result;
         }
 
@@ -71,7 +72,7 @@ namespace KartRider.Compatibility
         {
             int result = port + offset;
             if (result < IPEndPoint.MinPort || result > IPEndPoint.MaxPort)
-                throw new InvalidOperationException($"Invalid client port: {result}");
+                throw new InvalidOperationException($"올바르지 않은 클라이언트 포트: {result}");
             return (ushort)result;
         }
     }
@@ -135,7 +136,7 @@ namespace KartRider.Compatibility
     {
         public static ClientBuildProfile Modern { get; } = new ClientBuildProfile(
             ClientBuild.Modern,
-            "Modern PIN client",
+            "현대 PIN 클라이언트",
             string.Empty,
             0,
             null,
@@ -152,7 +153,7 @@ namespace KartRider.Compatibility
 
         public static ClientBuildProfile Korean5136 { get; } = new ClientBuildProfile(
             ClientBuild.Korean5136,
-            "Korean 5136",
+            "한국 5136",
             "629F084E2A12C6FA1FF0EA603B90F8768454D13A1BC2DF6A8504F8AA06FD6194",
             5136,
             5136,
@@ -169,7 +170,7 @@ namespace KartRider.Compatibility
 
         public static ClientBuildProfile Korean20051214 { get; } = new ClientBuildProfile(
             ClientBuild.Korean20051214,
-            "Korean 2005-12-14",
+            "한국 2005-12-14",
             "81C6E1CD14102D3937DB9933FCF83908049132D6F0ACA9F6CA153C1D9D23797A",
             236,
             236,
@@ -384,7 +385,7 @@ namespace KartRider.Compatibility
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Unable to restore PIN file: {ex.Message}");
+                Console.WriteLine($"PIN 파일 복원 실패: {ex.Message}");
             }
         }
     }
@@ -394,12 +395,14 @@ namespace KartRider.Compatibility
         private const string BackupSuffix = ".launcher-v2.bak";
         private const string CreatedSuffix = ".launcher-v2.created";
         private const string TemporarySuffix = ".launcher-v2.tmp";
+        private const string PristineBackupSuffix = ".pristine.bak";
+        private const string PristineAbsentSuffix = ".pristine.absent";
 
         public void Launch(ClientLaunchContext context)
         {
             ClientBuildProfile profile = ClientBuildProfiles.Active;
             if (!profile.IsLegacy)
-                throw new InvalidOperationException("The legacy launch strategy requires a legacy client profile.");
+                throw new InvalidOperationException("구형 실행 방식에는 구형 클라이언트 프로필이 필요합니다.");
 
             string gameConfigPath = Path.Combine(context.GameDirectory, "KartRider.xml");
             string launcherProfilePath = Path.Combine(context.GameDirectory, profile.ProfileRelativePath);
@@ -413,6 +416,7 @@ namespace KartRider.Compatibility
                     PrepareLegacyPin(context.PinFile, clientServerIp, loginPort);
                 if (profile.Build == ClientBuild.Korean5136)
                 {
+                    PrepareKorean5136Pin(context.PinFile, clientServerIp, loginPort);
                     PrepareKorean5136GameConfig(gameConfigPath, clientServerIp, loginPort);
                     PrepareKorean5136LauncherProfile(launcherProfilePath, context.Username);
                 }
@@ -437,7 +441,7 @@ namespace KartRider.Compatibility
                 if (!process.Start())
                 {
                     process.Dispose();
-                    throw new InvalidOperationException($"Unable to start {profile.DisplayName}.");
+                    throw new InvalidOperationException($"{profile.DisplayName} 실행에 실패했습니다.");
                 }
 
                 int processId = process.Id;
@@ -447,7 +451,7 @@ namespace KartRider.Compatibility
                     process.Dispose();
                 };
                 process.EnableRaisingEvents = true;
-                Console.WriteLine($"Started {profile.DisplayName}: PID {processId}");
+                Console.WriteLine($"{profile.DisplayName} 실행 완료: 프로세스 ID {processId}");
             }
             catch
             {
@@ -462,6 +466,12 @@ namespace KartRider.Compatibility
                 return;
 
             ClientBuildProfile profile = ClientBuildProfiles.Active;
+            // P5136 keeps the selected endpoint in the live files. Its stock
+            // files are preserved once as *.pristine.bak instead of being
+            // restored while the protected executable is still starting.
+            if (profile.Build == ClientBuild.Korean5136)
+                return;
+
             if (!string.IsNullOrWhiteSpace(context.PinFile))
                 RestoreFile(context.PinFile);
             RestoreFile(Path.Combine(context.GameDirectory, "KartRider.xml"));
@@ -479,7 +489,7 @@ namespace KartRider.Compatibility
             {
                 document = LoadLegacyXml(path);
                 if (document.Root == null || !string.Equals(document.Root.Name.LocalName, "config", StringComparison.OrdinalIgnoreCase))
-                    throw new InvalidDataException("KartRider.xml does not contain a config root element.");
+                    throw new InvalidDataException("KartRider.xml에 config 루트 요소가 없습니다.");
             }
             else
             {
@@ -507,7 +517,7 @@ namespace KartRider.Compatibility
             SaveUtf16Atomically(path, document);
         }
 
-        private static void PrepareKorean5136GameConfig(
+        internal static void PrepareKorean5136GameConfig(
             string path,
             string serverIp,
             ushort serverPort)
@@ -520,26 +530,220 @@ namespace KartRider.Compatibility
                 $"\t<server addr='{FormatEndpoint(serverIp, serverPort)}'/>\r\n" +
                 "</config>";
 
-            SnapshotFile(path);
+            PreparePersistentFile(path, required: false);
             SaveUtf8NoBomAtomically(path, content);
         }
 
-        private static void PrepareKorean5136LauncherProfile(string path, string username)
+        internal static void PrepareKorean5136LauncherProfile(string path, string username)
         {
+            string usernameElement = new XElement("username", username ?? string.Empty)
+                .ToString(SaveOptions.DisableFormatting);
             string content =
                 "<?xml version='1.0' encoding='UTF-16'?>\r\n" +
                 "<profile>\r\n" +
-                $"<username>{username ?? string.Empty}</username>\r\n" +
+                usernameElement + "\r\n" +
                 "</profile>";
 
-            SnapshotFile(path);
+            PreparePersistentFile(path, required: false);
             SaveUtf8NoBomAtomically(path, content);
+        }
+
+        internal static void PrepareKorean5136Pin(string path, string serverIp, ushort serverPort)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+                throw new FileNotFoundException("P5136 KartRider.pin 파일을 찾을 수 없습니다.", path);
+
+            // On the first persistent launch only, promote a transient backup
+            // left by an older connector to the immutable pristine backup.
+            PreparePersistentFile(path, required: true);
+
+            PINFile pin = new PINFile(path);
+            if (pin.Header.MinorVersion != 5136)
+                throw new InvalidDataException($"지원하지 않는 P5136 PIN 프로토콜: {pin.Header.MinorVersion}");
+            if (pin.AuthMethods == null || pin.AuthMethods.Count == 0)
+                throw new InvalidDataException("P5136 PIN에 인증 방식이 없습니다.");
+
+            foreach (PINFile.AuthMethod authMethod in pin.AuthMethods)
+            {
+                if (authMethod == null)
+                    throw new InvalidDataException("P5136 PIN에 올바르지 않은 인증 방식이 있습니다.");
+
+                if (authMethod.LoginServers == null)
+                    authMethod.LoginServers = new List<PINFile.IPEndPoint>();
+                else
+                    authMethod.LoginServers.Clear();
+
+                authMethod.LoginServers.Add(new PINFile.IPEndPoint
+                {
+                    IP = serverIp,
+                    Port = serverPort
+                });
+            }
+
+            if (!ProfileService.SettingConfig.NgsOn && pin.BmlObjects != null)
+            {
+                foreach (BmlObject bml in pin.BmlObjects)
+                {
+                    if (!string.Equals(bml?.Name, "extra", StringComparison.OrdinalIgnoreCase) ||
+                        bml.SubObjects == null)
+                    {
+                        continue;
+                    }
+
+                    for (int i = bml.SubObjects.Count - 1; i >= 0; i--)
+                    {
+                        if (string.Equals(bml.SubObjects[i].Item1, "NgsOn", StringComparison.OrdinalIgnoreCase))
+                            bml.SubObjects.RemoveAt(i);
+                    }
+                }
+            }
+
+            byte[] patchedPin = pin.GetEncryptedData();
+            string temporaryPath = path + TemporarySuffix;
+            try
+            {
+                File.WriteAllBytes(temporaryPath, patchedPin);
+                VerifyKorean5136PinEndpoint(temporaryPath, serverIp, serverPort);
+                File.Move(temporaryPath, path, true);
+            }
+            finally
+            {
+                if (File.Exists(temporaryPath))
+                    File.Delete(temporaryPath);
+            }
+
+            Console.WriteLine(
+                $"P5136 PIN 로그인 주소 준비 완료: {serverIp}:{serverPort} " +
+                $"(인증 방식 {pin.AuthMethods.Count}개)");
+        }
+
+        private static void PreparePersistentFile(string path, bool required)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+
+            string backupPath = path + PristineBackupSuffix;
+            string absentPath = path + PristineAbsentSuffix;
+            bool hasBackup = File.Exists(backupPath);
+            bool wasAbsent = File.Exists(absentPath);
+            if (hasBackup && wasAbsent)
+            {
+                throw new InvalidDataException(
+                    $"{path}의 순정 상태 파일이 서로 충돌합니다.");
+            }
+
+            if (!hasBackup && !wasAbsent)
+            {
+                string legacyBackupPath = path + BackupSuffix;
+                string legacyCreatedPath = path + CreatedSuffix;
+                if (File.Exists(legacyBackupPath))
+                {
+                    CreatePristineBackupOnce(legacyBackupPath, backupPath);
+                    File.Copy(legacyBackupPath, path, true);
+                    File.Delete(legacyBackupPath);
+                    if (File.Exists(legacyCreatedPath))
+                        File.Delete(legacyCreatedPath);
+                }
+                else if (File.Exists(legacyCreatedPath))
+                {
+                    if (required)
+                    {
+                        throw new FileNotFoundException(
+                            "원본 P5136 PIN이 없던 상태로 기록되어 있습니다.",
+                            path);
+                    }
+                    CreatePristineAbsentMarkerOnce(absentPath);
+                    File.Delete(legacyCreatedPath);
+                }
+                else if (File.Exists(path))
+                {
+                    CreatePristineBackupOnce(path, backupPath);
+                }
+                else if (required)
+                {
+                    throw new FileNotFoundException(
+                        "P5136 KartRider.pin 파일을 찾을 수 없습니다.",
+                        path);
+                }
+                else
+                {
+                    CreatePristineAbsentMarkerOnce(absentPath);
+                }
+            }
+
+            string legacyTemporaryPath = path + TemporarySuffix;
+            if (File.Exists(legacyTemporaryPath))
+                File.Delete(legacyTemporaryPath);
+
+            if (required && !File.Exists(path))
+            {
+                if (File.Exists(backupPath))
+                    File.Copy(backupPath, path, false);
+                else
+                    throw new FileNotFoundException("P5136 KartRider.pin 파일을 찾을 수 없습니다.", path);
+            }
+        }
+
+        private static void CreatePristineBackupOnce(string sourcePath, string backupPath)
+        {
+            try
+            {
+                File.Copy(sourcePath, backupPath, false);
+            }
+            catch (IOException) when (File.Exists(backupPath))
+            {
+                // Another connector instance won the create-once race.
+            }
+        }
+
+        private static void CreatePristineAbsentMarkerOnce(string absentPath)
+        {
+            try
+            {
+                using FileStream marker = new FileStream(
+                    absentPath,
+                    FileMode.CreateNew,
+                    FileAccess.Write,
+                    FileShare.Read);
+            }
+            catch (IOException) when (File.Exists(absentPath))
+            {
+                // Another connector instance recorded the pristine absence.
+            }
+        }
+
+        private static void VerifyKorean5136PinEndpoint(
+            string path,
+            string expectedServerIp,
+            ushort expectedServerPort)
+        {
+            PINFile verified = new PINFile(path);
+            if (verified.Header.MinorVersion != 5136 ||
+                verified.AuthMethods == null ||
+                verified.AuthMethods.Count == 0)
+            {
+                throw new InvalidDataException("수정한 P5136 PIN을 검증하지 못했습니다.");
+            }
+
+            foreach (PINFile.AuthMethod authMethod in verified.AuthMethods)
+            {
+                if (authMethod?.LoginServers == null || authMethod.LoginServers.Count != 1)
+                    throw new InvalidDataException("수정한 P5136 PIN의 로그인 주소 목록이 올바르지 않습니다.");
+
+                PINFile.IPEndPoint endpoint = authMethod.LoginServers[0];
+                if (!string.Equals(endpoint.IP, expectedServerIp, StringComparison.OrdinalIgnoreCase) ||
+                    endpoint.Port != expectedServerPort)
+                {
+                    throw new InvalidDataException(
+                        $"수정한 P5136 PIN 주소는 {endpoint}이며, 예상 주소는 " +
+                        $"{expectedServerIp}:{expectedServerPort}입니다.");
+                }
+            }
         }
 
         private static void PrepareLegacyPin(string path, string serverIp, ushort serverPort)
         {
             if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
-                throw new FileNotFoundException("Unable to locate the 2005 KartRider.pin file.", path);
+                throw new FileNotFoundException("2005 KartRider.pin 파일을 찾을 수 없습니다.", path);
 
             // A previous launcher or client crash may have left the temporary
             // v2 PIN in place. Always recover the original v1 file before
@@ -548,7 +752,7 @@ namespace KartRider.Compatibility
 
             PINFile pin = new PINFile(path);
             if (pin.Header.Unk1 != 1 && pin.Header.Unk1 != 2)
-                throw new InvalidDataException($"Unsupported 2005 PIN format: {pin.Header.Unk1}");
+                throw new InvalidDataException($"지원하지 않는 2005 PIN 형식: {pin.Header.Unk1}");
 
             pin.Header.Unk1 = 2;
             pin.Header.LoginType = 2;
@@ -610,7 +814,7 @@ namespace KartRider.Compatibility
             {
                 document = LoadLegacyXml(path);
                 if (document.Root == null || !string.Equals(document.Root.Name.LocalName, "profile", StringComparison.OrdinalIgnoreCase))
-                    throw new InvalidDataException("launcher.xml does not contain a profile root element.");
+                    throw new InvalidDataException("launcher.xml에 profile 루트 요소가 없습니다.");
             }
             else
             {
@@ -757,7 +961,7 @@ namespace KartRider.Compatibility
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Unable to restore {path}: {ex.Message}");
+                Console.WriteLine($"{path} 복원 실패: {ex.Message}");
             }
         }
 

@@ -1,14 +1,53 @@
 using KartLibrary.Data;
 using KartRider.Common.Data;
+using KartRider.Common.Network;
+using KartRider.Common.Utilities;
 using KartRider;
 using KartRider.Compatibility;
+using KartRider.IO.Packet;
+using KartRider.ServerLauncher;
+using KartRider_PacketName;
+using ExcData;
+using Profile;
 using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+
+string itemProbabilityTestRoot = Environment.GetEnvironmentVariable("P5136_ITEM_TEST_ROOT");
+if (!string.IsNullOrWhiteSpace(itemProbabilityTestRoot))
+{
+    ItemProbabilityConfiguration clientItemDefaults =
+        ItemProbabilityService.LoadClientDefaults(
+            itemProbabilityTestRoot,
+            out string itemProbabilitySource);
+    long individualWeight = clientItemDefaults.Individual.Sum(
+        entry => entry.GetWeight(ItemProbabilityRankBand.Combined));
+    long teamWeight = clientItemDefaults.Team.Sum(
+        entry => entry.GetWeight(ItemProbabilityRankBand.Combined));
+    if (clientItemDefaults.Individual.Count != 14 ||
+        clientItemDefaults.Team.Count != 18 ||
+        individualWeight <= 0 ||
+        teamWeight <= 0)
+    {
+        Console.Error.WriteLine(
+            $"P5136 item.rho probability table loading failed: " +
+            $"individual={clientItemDefaults.Individual.Count}/{individualWeight}, " +
+            $"team={clientItemDefaults.Team.Count}/{teamWeight}, source={itemProbabilitySource}");
+        return 1;
+    }
+    Console.WriteLine(
+        $"P5136 item.rho probability tables loaded: individual=14/{individualWeight}, " +
+        $"team=18/{teamWeight}, source={itemProbabilitySource}");
+}
 
 byte[] source = Encoding.UTF8.GetBytes(string.Concat(
     Enumerable.Repeat("P5136 framework zlib round-trip payload. ", 256)));
@@ -37,6 +76,62 @@ foreach ((bool encrypted, bool compressed) in new[]
 
 Console.WriteLine("KRData codec smoke test passed (4 modes).");
 
+if (!RunRoomNameSpeedKeywordSmokeTests(out string roomKeywordFailure))
+{
+    Console.Error.WriteLine($"P5136 room-name speed keyword parsing failed: {roomKeywordFailure}");
+    return 1;
+}
+
+Console.WriteLine("P5136 ASCII room-name speed keyword smoke test passed.");
+
+using (OutPacket loginProfile = new OutPacket())
+{
+    loginProfile.WriteUInt(0x8B019610);
+    loginProfile.WriteUInt(0xBA06B093);
+    loginProfile.WriteUInt(Adler32Helper.GenerateAdler32_ASCII("AccountDataProfile", 0));
+    loginProfile.WriteByte(0);
+
+    BmlObject root = new BmlObject { Name = "profile" };
+    root.SubObjects.Add(Tuple.Create(
+        "username",
+        new BmlObject { Name = "username", Value = "Yany2" }));
+    root.Save(loginProfile);
+
+    using InPacket loginPacket = new InPacket(loginProfile.ToArray());
+    if (Korean5136LoginProfileReader.ReadUsername(loginPacket) != "Yany2")
+    {
+        Console.Error.WriteLine("P5136 AccountDataProfile username parsing failed.");
+        return 1;
+    }
+}
+
+string identityValidationRoot = Path.Combine(Path.GetTempPath(), "KartRider-P5136-identity-root");
+if (!ClientIdentityValidator.TryNormalize(
+        "라이더2",
+        identityValidationRoot,
+        out string normalizedIdentity,
+        out _) ||
+    normalizedIdentity != "라이더2" ||
+    ClientIdentityValidator.TryNormalize(
+        "..\\escape",
+        identityValidationRoot,
+        out _,
+        out _))
+{
+    Console.Error.WriteLine("P5136 account identity validation failed.");
+    return 1;
+}
+
+Console.WriteLine("P5136 login identity parser/validator smoke test passed.");
+
+if (!RunPacketTraceSmokeTests(out string packetTraceFailure))
+{
+    Console.Error.WriteLine($"P5136 asynchronous packet trace failed: {packetTraceFailure}");
+    return 1;
+}
+
+Console.WriteLine("P5136 asynchronous packet trace/UI summary smoke test passed.");
+
 ClientPortTopology topology = ClientBuildProfiles.Korean5136.Ports;
 ushort defaultLoginPort = topology.ResolveLoginTcpPort(topology.DefaultConfiguredPort);
 if (topology.ResolveConfiguredPortFromLoginTcp(defaultLoginPort) != topology.DefaultConfiguredPort)
@@ -60,6 +155,575 @@ catch (InvalidOperationException)
 }
 
 ClientBuildProfiles.SetActive(ClientBuildProfiles.Korean5136);
+
+if (!RunUdpEndpointBindingSmokeTests(out string udpBindingFailure))
+{
+    Console.Error.WriteLine($"P5136 UDP generation first-bind failed: {udpBindingFailure}");
+    return 1;
+}
+
+Console.WriteLine("P5136 UDP/P2P generation first-bind smoke test passed.");
+
+if (!RunItemPickupContextSmokeTests(out string itemPickupFailure))
+{
+    Console.Error.WriteLine($"P5136 item pickup rank/position parsing failed: {itemPickupFailure}");
+    return 1;
+}
+
+Console.WriteLine("P5136 item pickup rank/position parsing smoke test passed.");
+
+if (!Korean5136Protocol.TryResolveRoomGameType(67, out byte individualCombineType) ||
+    individualCombineType != 1 ||
+    !Korean5136Protocol.TryResolveRoomGameType(23, out byte individualInfiniteType) ||
+    individualInfiniteType != 1 ||
+    !Korean5136Protocol.TryResolveRoomGameType(68, out byte teamCombineType) ||
+    teamCombineType != 3 ||
+    !Korean5136Protocol.TryResolveRoomGameType(24, out byte teamInfiniteType) ||
+    teamInfiniteType != 3)
+{
+    Console.Error.WriteLine("P5136 channel-to-room game type mapping failed.");
+    return 1;
+}
+
+List<int> channelRoomIds = new List<int>();
+try
+{
+    // Create more than one page of Infinite rooms first. A Combine room that
+    // was created later must still appear on page zero after filtering.
+    for (int index = 0; index < 11; index++)
+    {
+        int roomId = RoomManager.CreateRoom();
+        channelRoomIds.Add(roomId);
+        GameRoom room = RoomManager.GetRoom(roomId);
+        room.GameType = 1;
+        room.P5136ChannelGameType = 23;
+        room.P5136ChannelId = 13;
+    }
+
+    int combineRoomA = RoomManager.CreateRoom();
+    int combineRoomB = RoomManager.CreateRoom();
+    int teamCombineRoom = RoomManager.CreateRoom();
+    int teamInfiniteRoom = RoomManager.CreateRoom();
+    channelRoomIds.AddRange(new[]
+    {
+        combineRoomA,
+        combineRoomB,
+        teamCombineRoom,
+        teamInfiniteRoom
+    });
+
+    RoomManager.GetRoom(combineRoomA).GameType = 1;
+    RoomManager.GetRoom(combineRoomA).P5136ChannelGameType = 67;
+    RoomManager.GetRoom(combineRoomA).P5136ChannelId = 11;
+    RoomManager.GetRoom(combineRoomB).GameType = 1;
+    RoomManager.GetRoom(combineRoomB).P5136ChannelGameType = 67;
+    RoomManager.GetRoom(combineRoomB).P5136ChannelId = 12;
+    RoomManager.GetRoom(teamCombineRoom).GameType = 3;
+    RoomManager.GetRoom(teamCombineRoom).P5136ChannelGameType = 68;
+    RoomManager.GetRoom(teamCombineRoom).P5136ChannelId = 17;
+    RoomManager.GetRoom(teamInfiniteRoom).GameType = 3;
+    RoomManager.GetRoom(teamInfiniteRoom).P5136ChannelGameType = 24;
+    RoomManager.GetRoom(teamInfiniteRoom).P5136ChannelId = 19;
+
+    // Concrete A/B records are currently aggregated within one mode family;
+    // captures prove family isolation but not separate A/B room shards.
+    Dictionary<int, GameRoom> combineRooms = RoomManager.GetRoomsByPage(
+        0,
+        room => room.P5136ChannelGameType == 67,
+        out int combineRoomCount);
+    if (combineRoomCount != 2 ||
+        !combineRooms.ContainsKey(combineRoomA) ||
+        !combineRooms.ContainsKey(combineRoomB) ||
+        combineRooms.Values.Any(room => room.P5136ChannelGameType != 67))
+    {
+        Console.Error.WriteLine("P5136 channel-family room filtering failed.");
+        return 1;
+    }
+
+    Dictionary<int, GameRoom> teamCombineRooms = RoomManager.GetRoomsByPage(
+        0,
+        room => room.P5136ChannelGameType == 68,
+        out int teamCombineRoomCount);
+    if (teamCombineRoomCount != 1 ||
+        !teamCombineRooms.ContainsKey(teamCombineRoom) ||
+        teamCombineRooms.ContainsKey(teamInfiniteRoom))
+    {
+        Console.Error.WriteLine("P5136 team Combine/Infinite room isolation failed.");
+        return 1;
+    }
+}
+finally
+{
+    foreach (int roomId in channelRoomIds)
+        RoomManager._rooms.TryRemove(roomId, out _);
+}
+
+Console.WriteLine("P5136 channel-family room filtering smoke test passed.");
+
+(Socket handshakePeer, Socket handshakeServer) = CreateSocketPair();
+try
+{
+    handshakePeer.ReceiveTimeout = 3000;
+    SessionGroup handshakeSession = new SessionGroup(handshakeServer, null);
+
+    using (OutPacket prematurePacket = new OutPacket("PrServerTime"))
+    {
+        prematurePacket.WriteInt(123);
+        handshakeSession.Client.Send(prematurePacket);
+    }
+    Thread.Sleep(25);
+    if (handshakePeer.Available != 0)
+    {
+        Console.Error.WriteLine("P5136 emitted a normal packet before PcFirstMessage.");
+        return 1;
+    }
+
+    const uint handshakeIv = 0x51365136u;
+    byte[] initialPayload;
+    using (OutPacket initialPacket = new OutPacket("PcFirstMessage"))
+    {
+        initialPacket.WriteInt(0x12345678);
+        initialPayload = initialPacket.ToArray();
+        handshakeSession.Client.SendInitialHandshake(initialPacket, handshakeIv);
+    }
+
+    int plaintextLength = BitConverter.ToInt32(ReceiveExact(handshakePeer, 4), 0);
+    byte[] receivedInitialPayload = ReceiveExact(handshakePeer, plaintextLength);
+    if (plaintextLength != initialPayload.Length ||
+        !receivedInitialPayload.SequenceEqual(initialPayload) ||
+        handshakeSession.Client.RIV != handshakeIv)
+    {
+        Console.Error.WriteLine("P5136 initial handshake was not the first plaintext frame with IV ready.");
+        return 1;
+    }
+
+    byte[] encryptedPayload;
+    using (OutPacket encryptedPacket = new OutPacket("PrServerTime"))
+    {
+        encryptedPacket.WriteInt(0x76543210);
+        encryptedPayload = encryptedPacket.ToArray();
+        handshakeSession.Client.Send(encryptedPacket);
+    }
+
+    uint encryptedHeader = BitConverter.ToUInt32(ReceiveExact(handshakePeer, 4), 0);
+    uint encryptedBodyLength = encryptedHeader ^ handshakeIv ^ 4164199944u;
+    _ = ReceiveExact(handshakePeer, checked((int)encryptedBodyLength));
+    if (encryptedBodyLength != encryptedPayload.Length + 4 ||
+        handshakeSession.Client.SIV == handshakeIv)
+    {
+        Console.Error.WriteLine("P5136 post-handshake frame did not use the negotiated IV.");
+        return 1;
+    }
+
+    byte[] eventRewardRequestPayload;
+    using (OutPacket eventRewardRequest = new OutPacket("LoRqEventRewardPacket"))
+    {
+        eventRewardRequest.WriteInt(0);
+        eventRewardRequest.WriteInt(0);
+        eventRewardRequestPayload = eventRewardRequest.ToArray();
+    }
+
+    uint eventRewardIv = handshakeSession.Client.SIV;
+    using (InPacket eventRewardRequest = new InPacket(eventRewardRequestPayload))
+    {
+        uint eventRewardHash = eventRewardRequest.ReadUInt();
+        if (!Korean5136Protocol.TryHandle(
+                handshakeSession,
+                eventRewardHash,
+                eventRewardRequest))
+        {
+            Console.Error.WriteLine("P5136 VIP event-reward request was not handled.");
+            return 1;
+        }
+    }
+
+    uint eventRewardHeader = BitConverter.ToUInt32(ReceiveExact(handshakePeer, 4), 0);
+    uint eventRewardBodyLength = eventRewardHeader ^ eventRewardIv ^ 4164199944u;
+    _ = ReceiveExact(handshakePeer, checked((int)eventRewardBodyLength));
+    if (eventRewardBodyLength != 16)
+    {
+        Console.Error.WriteLine(
+            $"P5136 VIP event-reward reply length was {eventRewardBodyLength}, expected 16.");
+        return 1;
+    }
+
+    handshakeSession.Client.Disconnect();
+}
+finally
+{
+    handshakePeer.Dispose();
+    handshakeServer.Dispose();
+}
+
+Console.WriteLine("P5136 first-frame ordering/encryption and VIP reward pairing smoke test passed.");
+
+string leaseProfileDirectory = Path.Combine(
+    Path.GetTempPath(),
+    $"KartRider-P5136-leases-{Guid.NewGuid():N}");
+string originalProfileDirectory = FileName.ProfileDir;
+List<Socket> leasePeerSockets = new List<Socket>();
+int leaseRoomId = -1;
+try
+{
+    Directory.CreateDirectory(leaseProfileDirectory);
+    FileName.ProfileDir = leaseProfileDirectory;
+    FileName.FileNames.Clear();
+
+    string suffix = Guid.NewGuid().ToString("N").Substring(0, 8);
+    string primaryNickname = "LeaseA" + suffix;
+    string otherNickname = "LeaseB" + suffix;
+
+    (Socket primaryPeer, Socket primaryServer) = CreateSocketPair();
+    leasePeerSockets.Add(primaryPeer);
+    SessionGroup primary = new SessionGroup(primaryServer, null);
+    ClientManager.AddClient(primary);
+    if (!ClientManager.TryClaimLoginIdentity(
+            primary,
+            primaryNickname,
+            out string claimedNickname,
+            out uint userNo,
+            out string claimFailure) ||
+        claimedNickname != primaryNickname || userNo == 0)
+    {
+        Console.Error.WriteLine($"P5136 identity claim failed: {claimFailure}");
+        return 1;
+    }
+
+    (Socket duplicatePeer, Socket duplicateServer) = CreateSocketPair();
+    leasePeerSockets.Add(duplicatePeer);
+    SessionGroup duplicate = new SessionGroup(duplicateServer, null);
+    ClientManager.AddClient(duplicate);
+    if (ClientManager.TryClaimLoginIdentity(
+        duplicate,
+        primaryNickname.ToLowerInvariant(),
+        out _,
+        out _,
+        out _))
+    {
+        Console.Error.WriteLine("P5136 duplicate nickname claim was accepted.");
+        return 1;
+    }
+    duplicate.Client.Disconnect();
+
+    (Socket otherPeer, Socket otherServer) = CreateSocketPair();
+    leasePeerSockets.Add(otherPeer);
+    SessionGroup other = new SessionGroup(otherServer, null);
+    ClientManager.AddClient(other);
+    if (!ClientManager.TryClaimLoginIdentity(
+        other,
+        otherNickname,
+        out _,
+        out uint otherUserNo,
+        out _) ||
+        otherUserNo == userNo)
+    {
+        Console.Error.WriteLine("P5136 distinct nickname claim failed.");
+        return 1;
+    }
+    other.Client.Disconnect();
+
+    leaseRoomId = RoomManager.CreateRoom();
+    byte leaseSlot = RoomManager.AddPlayer(leaseRoomId, primaryNickname, 0, 0, primary);
+    const ushort migrationChannel = 11;
+    const byte migrationGameType = 67;
+    string migrationBeginFailure = string.Empty;
+    if (leaseSlot == byte.MaxValue ||
+        !ClientManager.TryBeginChannelMigration(
+            primary,
+            migrationChannel,
+            migrationGameType,
+            out ushort migrationToken,
+            out migrationBeginFailure))
+    {
+        Console.Error.WriteLine($"P5136 migration begin failed: {migrationBeginFailure}");
+        return 1;
+    }
+
+    // Exercise the important ordering: the source socket closes before the
+    // channel socket sends PqChannelMovein. Shared room state must survive.
+    IDisposable sourceOperation = ClientManager.TryAcquireIdentityOperation(primary);
+    if (sourceOperation == null)
+    {
+        Console.Error.WriteLine("P5136 source operation fence could not be acquired.");
+        return 1;
+    }
+    primary.Client.Disconnect();
+    if (RoomManager.TryGetRoomId(primaryNickname) != leaseRoomId)
+    {
+        Console.Error.WriteLine("P5136 source disconnect removed room state during migration.");
+        return 1;
+    }
+
+    (Socket destinationPeer, Socket destinationServer) = CreateSocketPair();
+    leasePeerSockets.Add(destinationPeer);
+    SessionGroup destination = new SessionGroup(destinationServer, null);
+    ClientManager.AddClient(destination);
+    Task<(bool Success, string Nickname, string Failure)> migrationTask = Task.Run(() =>
+    {
+        bool success = ClientManager.TryCompleteChannelMigration(
+            destination,
+            userNo,
+            migrationChannel,
+            migrationToken,
+            out string migrated,
+            out string failure);
+        return (success, migrated, failure);
+    });
+    await Task.Delay(75);
+    if (migrationTask.IsCompleted)
+    {
+        Console.Error.WriteLine("P5136 migration did not wait for an in-flight source operation.");
+        return 1;
+    }
+    sourceOperation.Dispose();
+    (bool migrationSuccess, string migratedNickname, string migrationFailure) =
+        await migrationTask;
+    if (!migrationSuccess ||
+        migratedNickname != primaryNickname ||
+        !ReferenceEquals(ClientManager.GetParent(primaryNickname), destination) ||
+        destination.P5136ChannelGameType != migrationGameType ||
+        destination.P5136ChannelId != migrationChannel ||
+        !ReferenceEquals(RoomManager.GetPlayer(leaseRoomId, primaryNickname)?.Session, destination))
+    {
+        Console.Error.WriteLine($"P5136 migration ownership transfer failed: {migrationFailure}");
+        return 1;
+    }
+
+    IDisposable destinationOperation = ClientManager.TryAcquireIdentityOperation(destination);
+    if (destinationOperation == null)
+    {
+        Console.Error.WriteLine("P5136 destination operation fence could not be acquired.");
+        return 1;
+    }
+    destination.Client.Disconnect();
+
+    (Socket blockedPeer, Socket blockedServer) = CreateSocketPair();
+    leasePeerSockets.Add(blockedPeer);
+    SessionGroup blockedReplacement = new SessionGroup(blockedServer, null);
+    ClientManager.AddClient(blockedReplacement);
+    if (ClientManager.TryClaimLoginIdentity(
+        blockedReplacement,
+        primaryNickname,
+        out _,
+        out _,
+        out _))
+    {
+        Console.Error.WriteLine("P5136 cleanup tombstone allowed an early replacement claim.");
+        return 1;
+    }
+    blockedReplacement.Client.Disconnect();
+
+    destinationOperation.Dispose();
+    if (!SpinWait.SpinUntil(
+            () => !ClientManager.HasClientWithNickname(primaryNickname) &&
+                  RoomManager.TryGetRoomId(primaryNickname) == -1,
+            3000))
+    {
+        Console.Error.WriteLine("P5136 generation cleanup did not finish after its operation fence drained.");
+        return 1;
+    }
+
+    (Socket replacementPeer, Socket replacementServer) = CreateSocketPair();
+    leasePeerSockets.Add(replacementPeer);
+    SessionGroup replacement = new SessionGroup(replacementServer, null);
+    ClientManager.AddClient(replacement);
+    if (!ClientManager.TryClaimLoginIdentity(
+            replacement,
+            primaryNickname,
+            out _,
+            out _,
+            out string replacementFailure))
+    {
+        Console.Error.WriteLine($"P5136 post-cleanup replacement claim failed: {replacementFailure}");
+        return 1;
+    }
+    leaseRoomId = RoomManager.CreateRoom();
+    if (RoomManager.AddPlayer(leaseRoomId, primaryNickname, 0, 0, replacement) == byte.MaxValue)
+    {
+        Console.Error.WriteLine("P5136 replacement could not enter a room after cleanup.");
+        return 1;
+    }
+    await Task.Delay(250);
+    if (!ReferenceEquals(ClientManager.GetParent(primaryNickname), replacement) ||
+        RoomManager.TryGetRoomId(primaryNickname) != leaseRoomId)
+    {
+        Console.Error.WriteLine("P5136 stale cleanup erased the replacement generation.");
+        return 1;
+    }
+    replacement.Client.Disconnect();
+}
+finally
+{
+    ClientManager.DisconnectAll();
+    foreach (Socket socket in leasePeerSockets)
+        socket.Dispose();
+    if (leaseRoomId != -1 && RoomManager.GetRoom(leaseRoomId) is GameRoom leaseRoom)
+        RoomManager.RemoveRoom(leaseRoom);
+    FileName.FileNames.Clear();
+    FileName.ProfileDir = originalProfileDirectory;
+    if (Directory.Exists(leaseProfileDirectory))
+        Directory.Delete(leaseProfileDirectory, true);
+}
+
+Console.WriteLine("P5136 duplicate identity/generation migration smoke test passed.");
+
+string settingsTestDirectory = Path.Combine(
+    Path.GetTempPath(),
+    $"KartRider-P5136-settings-{Guid.NewGuid():N}");
+string settingsTestPath = Path.Combine(settingsTestDirectory, "server-launcher.json");
+Profile.Setting originalConnectorSettings = ProfileService.SettingConfig;
+try
+{
+    ProfileService.SettingConfig = new Profile.Setting
+    {
+        ServerIP = "192.0.2.55",
+        ServerPort = 45678
+    };
+
+    ServerLauncherSettings defaults = ServerLauncherSettingsStore.LoadOrDefault(settingsTestPath);
+    if (defaults.BindAddress != IPAddress.Loopback.ToString() ||
+        defaults.AdvertisedAddress != IPAddress.Loopback.ToString() ||
+        defaults.ConfiguredPort != topology.DefaultConfiguredPort ||
+        defaults.LogDirectory != ServerLauncherSettings.DefaultLogDirectory ||
+        !defaults.EnablePacketTrace ||
+        File.Exists(settingsTestPath))
+    {
+        Console.Error.WriteLine("Server settings inherited the connector target.");
+        return 1;
+    }
+
+    string explicitLogDirectory = Path.Combine(settingsTestDirectory, "trace");
+    ServerLauncherSettings explicitSettings = new ServerLauncherSettings
+    {
+        BindAddress = IPAddress.Any.ToString(),
+        AdvertisedAddress = "192.0.2.15",
+        ConfiguredPort = 44000,
+        LogDirectory = explicitLogDirectory,
+        EnablePacketTrace = false,
+        FirstMessageDelayMilliseconds = 375,
+        ItemProbabilityRankBand = ItemProbabilityRankBand.High,
+        IndividualItemProbabilities = new List<ItemProbabilityEntry>
+        {
+            new ItemProbabilityEntry
+            {
+                ItemId = 8,
+                Name = "banana",
+                TopWeight = 1,
+                HighWeight = 7,
+                MiddleWeight = 1,
+                LowWeight = 1
+            }
+        },
+        TeamItemProbabilities = new List<ItemProbabilityEntry>
+        {
+            new ItemProbabilityEntry
+            {
+                ItemId = 10,
+                Name = "shield",
+                TopWeight = 1,
+                HighWeight = 9,
+                MiddleWeight = 1,
+                LowWeight = 1
+            }
+        }
+    };
+    ServerLauncherSettingsStore.Save(explicitSettings, settingsTestPath);
+    ServerLauncherSettings reloaded = ServerLauncherSettingsStore.LoadOrDefault(settingsTestPath);
+    if (reloaded.BindAddress != explicitSettings.BindAddress ||
+        reloaded.AdvertisedAddress != explicitSettings.AdvertisedAddress ||
+        reloaded.ConfiguredPort != explicitSettings.ConfiguredPort ||
+        reloaded.LogDirectory != explicitSettings.LogDirectory ||
+        reloaded.EnablePacketTrace != explicitSettings.EnablePacketTrace ||
+        reloaded.FirstMessageDelayMilliseconds != explicitSettings.FirstMessageDelayMilliseconds ||
+        reloaded.ItemProbabilityRankBand != ItemProbabilityRankBand.High ||
+        reloaded.IndividualItemProbabilities.Count != 1 ||
+        reloaded.IndividualItemProbabilities[0].ItemId != 8 ||
+        reloaded.IndividualItemProbabilities[0].HighWeight != 7 ||
+        reloaded.TeamItemProbabilities.Count != 1 ||
+        reloaded.TeamItemProbabilities[0].ItemId != 10 ||
+        reloaded.TeamItemProbabilities[0].HighWeight != 9)
+    {
+        Console.Error.WriteLine("Server settings persistence round trip failed.");
+        return 1;
+    }
+}
+finally
+{
+    ProfileService.SettingConfig = originalConnectorSettings;
+    if (Directory.Exists(settingsTestDirectory))
+    {
+        Directory.Delete(settingsTestDirectory, true);
+    }
+}
+
+Console.WriteLine("Server/connector settings isolation smoke test passed.");
+
+ItemProbabilityService.Configure(
+    AppContext.BaseDirectory,
+    new ItemProbabilityConfiguration
+    {
+        RankBand = ItemProbabilityRankBand.Live,
+        Individual = CreateRankSpecificItemTable(),
+        Team = CreateRankSpecificItemTable()
+    });
+short[] expectedLiveRankItems = { 101, 102, 102, 103, 103, 104, 104, 104 };
+for (int rank = 0; rank < expectedLiveRankItems.Length; rank++)
+{
+    short selected = ItemProbabilityService.NextItem(
+        teamMode: false,
+        liveRank: rank,
+        racerCount: expectedLiveRankItems.Length);
+    if (selected != expectedLiveRankItems[rank])
+    {
+        Console.Error.WriteLine(
+            $"P5136 live-rank item selection failed: rank={rank}, " +
+            $"expected={expectedLiveRankItems[rank]}, actual={selected}");
+        return 1;
+    }
+}
+
+ItemProbabilityService.Configure(
+    AppContext.BaseDirectory,
+    new ItemProbabilityConfiguration
+    {
+        RankBand = ItemProbabilityRankBand.Combined,
+        Individual = new List<ItemProbabilityEntry>
+        {
+            new ItemProbabilityEntry
+            {
+                ItemId = 8,
+                Name = "banana",
+                TopWeight = 1,
+                HighWeight = 1,
+                MiddleWeight = 1,
+                LowWeight = 1
+            }
+        },
+        Team = new List<ItemProbabilityEntry>
+        {
+            new ItemProbabilityEntry
+            {
+                ItemId = 10,
+                Name = "shield",
+                TopWeight = 1,
+                HighWeight = 1,
+                MiddleWeight = 1,
+                LowWeight = 1
+            }
+        }
+    });
+for (int index = 0; index < 32; index++)
+{
+    if (ItemProbabilityService.NextItem(teamMode: false) != 8 ||
+        ItemProbabilityService.NextItem(teamMode: true) != 10)
+    {
+        Console.Error.WriteLine("P5136 weighted item selection was not deterministic for a one-row table.");
+        return 1;
+    }
+}
+
+Console.WriteLine("P5136 weighted item probability/settings smoke test passed.");
+
 ushort testBasePort = FindAvailablePortBlock();
 P5136ServerOptions serverOptions = new P5136ServerOptions
 {
@@ -67,7 +731,8 @@ P5136ServerOptions serverOptions = new P5136ServerOptions
     AdvertisedAddress = IPAddress.Loopback,
     ConfiguredPort = testBasePort,
     LogDirectory = Path.Combine(Path.GetTempPath(), "KartRider-P5136-smoke-logs"),
-    EnablePacketTrace = false
+    EnablePacketTrace = false,
+    FirstMessageDelayMilliseconds = 250
 };
 
 ClientServerRuntime.Start(AppContext.BaseDirectory, serverOptions);
@@ -79,7 +744,8 @@ try
         loginEndPoint.Port != topology.ResolveLoginTcpPort(testBasePort) ||
         RouterListener.UDPServer?.LocalEndPoint?.Port != topology.ResolveUdpPort(testBasePort) ||
         RouterListener.P2PServer?.LocalEndPoint?.Port != topology.ResolveP2pPort(testBasePort) ||
-        RouterListener.MsgrServer?.LocalEndPoint?.Port != topology.ResolveMessengerPort(testBasePort))
+        RouterListener.MsgrServer?.LocalEndPoint?.Port != topology.ResolveMessengerPort(testBasePort) ||
+        ClientServerRuntime.FirstMessageDelayMilliseconds != 250)
     {
         Console.Error.WriteLine("P5136 listener bind smoke test failed.");
         return 1;
@@ -160,18 +826,914 @@ finally
 
 Console.WriteLine("P236 explicit bind-address smoke test passed.");
 
+string p236RestoreTestDirectory = Path.Combine(
+    Path.GetTempPath(),
+    $"KartRider-P236-restore-{Guid.NewGuid():N}");
+string p236RestorePinPath = Path.Combine(p236RestoreTestDirectory, "KartRider.pin");
+string p236RestoreGameConfigPath = Path.Combine(p236RestoreTestDirectory, "KartRider.xml");
+string p236RestoreProfilePath = Path.Combine(
+    p236RestoreTestDirectory,
+    ClientBuildProfiles.Korean20051214.ProfileRelativePath);
+try
+{
+    Directory.CreateDirectory(Path.GetDirectoryName(p236RestoreProfilePath)!);
+    foreach (string path in new[]
+    {
+        p236RestorePinPath,
+        p236RestoreGameConfigPath,
+        p236RestoreProfilePath
+    })
+    {
+        File.WriteAllText(path, "patched", Encoding.UTF8);
+        File.WriteAllText(path + ".launcher-v2.bak", "pristine", Encoding.UTF8);
+    }
+
+    ClientBuildProfiles.SetActive(ClientBuildProfiles.Korean20051214);
+    new LegacyProfileLaunchStrategy().Restore(new ClientLaunchContext(
+        p236RestoreTestDirectory,
+        p236RestorePinPath,
+        Path.Combine(p236RestoreTestDirectory, "KartRider-bak.pin"),
+        "127.0.0.1",
+        39311,
+        "smoke"));
+
+    if (new[] { p236RestorePinPath, p236RestoreGameConfigPath, p236RestoreProfilePath }
+        .Any(path =>
+            File.ReadAllText(path, Encoding.UTF8) != "pristine" ||
+            File.Exists(path + ".launcher-v2.bak")))
+    {
+        Console.Error.WriteLine("P236 transient restore compatibility test failed.");
+        return 1;
+    }
+}
+finally
+{
+    ClientBuildProfiles.SetActive(ClientBuildProfiles.Korean5136);
+    if (Directory.Exists(p236RestoreTestDirectory))
+        Directory.Delete(p236RestoreTestDirectory, true);
+}
+
+Console.WriteLine("P236 transient restore compatibility smoke test passed.");
+
+string persistentFilesTestDirectory = Path.Combine(
+    Path.GetTempPath(),
+    $"KartRider-P5136-persistent-files-{Guid.NewGuid():N}");
+string persistentGameConfigPath = Path.Combine(persistentFilesTestDirectory, "KartRider.xml");
+string persistentLauncherProfilePath = Path.Combine(
+    persistentFilesTestDirectory,
+    "Profile",
+    "kr",
+    "launcher.xml");
+byte[] pristineGameConfig = Encoding.UTF8.GetBytes(
+    "<?xml version='1.0' encoding='UTF-8'?><config><stock value='1'/></config>");
+try
+{
+    Directory.CreateDirectory(persistentFilesTestDirectory);
+    File.WriteAllBytes(persistentGameConfigPath, pristineGameConfig);
+
+    LegacyProfileLaunchStrategy.PrepareKorean5136GameConfig(
+        persistentGameConfigPath,
+        "192.0.2.20",
+        46001);
+    LegacyProfileLaunchStrategy.PrepareKorean5136LauncherProfile(
+        persistentLauncherProfilePath,
+        "first-user");
+
+    if (!File.Exists(persistentGameConfigPath + ".pristine.bak") ||
+        !pristineGameConfig.SequenceEqual(
+            File.ReadAllBytes(persistentGameConfigPath + ".pristine.bak")) ||
+        !File.Exists(persistentLauncherProfilePath + ".pristine.absent") ||
+        File.Exists(persistentLauncherProfilePath + ".pristine.bak"))
+    {
+        Console.Error.WriteLine("P5136 persistent XML pristine-state recording failed.");
+        return 1;
+    }
+
+    LegacyProfileLaunchStrategy.PrepareKorean5136GameConfig(
+        persistentGameConfigPath,
+        "192.0.2.21",
+        46002);
+    LegacyProfileLaunchStrategy.PrepareKorean5136LauncherProfile(
+        persistentLauncherProfilePath,
+        "second-user");
+
+    string liveGameConfig = File.ReadAllText(persistentGameConfigPath, Encoding.UTF8);
+    string liveLauncherProfile = File.ReadAllText(persistentLauncherProfilePath, Encoding.UTF8);
+    if (!liveGameConfig.Contains("192.0.2.21:46002", StringComparison.Ordinal) ||
+        !liveLauncherProfile.Contains("second-user", StringComparison.Ordinal) ||
+        !pristineGameConfig.SequenceEqual(
+            File.ReadAllBytes(persistentGameConfigPath + ".pristine.bak")) ||
+        File.Exists(persistentLauncherProfilePath + ".pristine.bak"))
+    {
+        Console.Error.WriteLine("P5136 persistent XML repatch/backup test failed.");
+        return 1;
+    }
+}
+finally
+{
+    if (Directory.Exists(persistentFilesTestDirectory))
+        Directory.Delete(persistentFilesTestDirectory, true);
+}
+
+Console.WriteLine("P5136 persistent XML/pristine-state smoke test passed.");
+
 if (args.Length == 1)
 {
-    PINFile pin = new PINFile(args[0]);
+    string sourcePinPath = Path.GetFullPath(args[0]);
+    byte[] sourcePinBytes = File.ReadAllBytes(sourcePinPath);
+    PINFile pin = new PINFile(sourcePinPath);
     if (pin.Header.MinorVersion != 5136)
     {
         Console.Error.WriteLine($"Unexpected PIN protocol: {pin.Header.MinorVersion}");
         return 1;
     }
-    Console.WriteLine("P5136 PIN read smoke test passed.");
+
+    string pinTestDirectory = Path.Combine(
+        Path.GetTempPath(),
+        $"KartRider-P5136-pin-{Guid.NewGuid():N}");
+    string pinTestPath = Path.Combine(pinTestDirectory, "KartRider.pin");
+    string pristinePinBackupPath = pinTestPath + ".pristine.bak";
+    const string expectedIp = "192.0.2.10";
+    const ushort expectedPort = 45001;
+    const string secondExpectedIp = "192.0.2.11";
+    const ushort secondExpectedPort = 45002;
+    const string migratedExpectedIp = "192.0.2.12";
+    const ushort migratedExpectedPort = 45003;
+    try
+    {
+        Directory.CreateDirectory(pinTestDirectory);
+        File.Copy(sourcePinPath, pinTestPath);
+        LegacyProfileLaunchStrategy.PrepareKorean5136Pin(
+            pinTestPath,
+            expectedIp,
+            expectedPort);
+
+        PINFile patched = new PINFile(pinTestPath);
+        if (patched.AuthMethods == null ||
+            patched.AuthMethods.Count == 0 ||
+            patched.AuthMethods.Any(authMethod =>
+                authMethod?.LoginServers == null ||
+                authMethod.LoginServers.Count != 1 ||
+                authMethod.LoginServers[0].IP != expectedIp ||
+                authMethod.LoginServers[0].Port != expectedPort))
+        {
+            Console.Error.WriteLine("P5136 PIN endpoint patch smoke test failed.");
+            return 1;
+        }
+        if (!File.Exists(pristinePinBackupPath) ||
+            !sourcePinBytes.SequenceEqual(File.ReadAllBytes(pristinePinBackupPath)) ||
+            File.Exists(pinTestPath + ".launcher-v2.bak"))
+        {
+            Console.Error.WriteLine("P5136 pristine PIN backup creation failed.");
+            return 1;
+        }
+
+        LegacyProfileLaunchStrategy.PrepareKorean5136Pin(
+            pinTestPath,
+            secondExpectedIp,
+            secondExpectedPort);
+        PINFile secondPatched = new PINFile(pinTestPath);
+        if (secondPatched.AuthMethods == null ||
+            secondPatched.AuthMethods.Count == 0 ||
+            secondPatched.AuthMethods.Any(authMethod =>
+                authMethod?.LoginServers == null ||
+                authMethod.LoginServers.Count != 1 ||
+                authMethod.LoginServers[0].IP != secondExpectedIp ||
+                authMethod.LoginServers[0].Port != secondExpectedPort))
+        {
+            Console.Error.WriteLine("P5136 persistent PIN repatch smoke test failed.");
+            return 1;
+        }
+        if (!sourcePinBytes.SequenceEqual(File.ReadAllBytes(pristinePinBackupPath)))
+        {
+            Console.Error.WriteLine("P5136 pristine PIN backup was overwritten.");
+            return 1;
+        }
+
+        string migratedPinPath = Path.Combine(pinTestDirectory, "Migrated-KartRider.pin");
+        File.Copy(pinTestPath, migratedPinPath);
+        File.Copy(sourcePinPath, migratedPinPath + ".launcher-v2.bak");
+        LegacyProfileLaunchStrategy.PrepareKorean5136Pin(
+            migratedPinPath,
+            migratedExpectedIp,
+            migratedExpectedPort);
+        PINFile migratedPin = new PINFile(migratedPinPath);
+        if (!File.Exists(migratedPinPath + ".pristine.bak") ||
+            !sourcePinBytes.SequenceEqual(
+                File.ReadAllBytes(migratedPinPath + ".pristine.bak")) ||
+            File.Exists(migratedPinPath + ".launcher-v2.bak") ||
+            migratedPin.AuthMethods.Any(authMethod =>
+                authMethod?.LoginServers == null ||
+                authMethod.LoginServers.Count != 1 ||
+                authMethod.LoginServers[0].IP != migratedExpectedIp ||
+                authMethod.LoginServers[0].Port != migratedExpectedPort))
+        {
+            Console.Error.WriteLine("P5136 legacy backup migration smoke test failed.");
+            return 1;
+        }
+
+        byte[] persistentPinBytes = File.ReadAllBytes(pinTestPath);
+
+        new LegacyProfileLaunchStrategy().Restore(new ClientLaunchContext(
+            pinTestDirectory,
+            pinTestPath,
+            Path.Combine(pinTestDirectory, "KartRider-bak.pin"),
+            expectedIp,
+            checked((ushort)(expectedPort - 1)),
+            "smoke"));
+        if (!persistentPinBytes.SequenceEqual(File.ReadAllBytes(pinTestPath)))
+        {
+            Console.Error.WriteLine("P5136 persistent PIN was restored unexpectedly.");
+            return 1;
+        }
+        if (!sourcePinBytes.SequenceEqual(File.ReadAllBytes(sourcePinPath)))
+        {
+            Console.Error.WriteLine("P5136 PIN source fixture was modified.");
+            return 1;
+        }
+    }
+    finally
+    {
+        if (Directory.Exists(pinTestDirectory))
+            Directory.Delete(pinTestDirectory, true);
+    }
+
+    Console.WriteLine("P5136 persistent PIN/pristine-backup smoke test passed.");
 }
 
 return 0;
+
+static bool RunPacketTraceSmokeTests(out string failure)
+{
+    if (!RunUiLogBatchSmoke(out failure) ||
+        !RunBasicPacketTraceSmoke(out failure) ||
+        !RunConcurrentPacketTraceSmoke(out failure) ||
+        !RunPacketTraceQueueCapacitySmoke(out failure) ||
+        !RunPacketTraceBlockedUiSmoke(out failure) ||
+        !RunPacketTraceWriterRecoverySmoke(out failure))
+    {
+        return false;
+    }
+
+    failure = string.Empty;
+    return true;
+}
+
+static bool RunUdpEndpointBindingSmokeTests(out string failure)
+{
+    const string nickname = "UdpFirstBind";
+    IPEndPoint udpFirst = new IPEndPoint(IPAddress.Parse("192.0.2.15"), 51000);
+    IPEndPoint udpAlternate = new IPEndPoint(IPAddress.Parse("192.0.2.15"), 51001);
+    IPEndPoint p2pFirst = new IPEndPoint(IPAddress.Parse("192.0.2.15"), 52000);
+
+    UdpServer.ClearEndpointBindingsForTesting();
+    try
+    {
+        if (UdpServer.BindEndpointForTesting(
+                nickname, false, udpFirst, 0x11111111, false, 10, out _) !=
+            EndpointBindResult.Bound ||
+            UdpServer.BindEndpointForTesting(
+                nickname, true, p2pFirst, 0x22222222, true, 10, out _) !=
+            EndpointBindResult.Bound)
+        {
+            failure = "the first UDP and P2P routes were not bound independently";
+            return false;
+        }
+
+        if (UdpServer.BindEndpointForTesting(
+                nickname, false, udpFirst, 0x33333333, false, 10,
+                out GenerationEndpointBinding refreshed) != EndpointBindResult.Refreshed ||
+            refreshed.Hash != 0x33333333 ||
+            UdpServer.BindEndpointForTesting(
+                nickname, false, udpAlternate, 0x44444444, false, 10,
+                out GenerationEndpointBinding rejected) != EndpointBindResult.EndpointMismatch ||
+            !rejected.Endpoint.Equals(udpFirst))
+        {
+            failure = "a same-generation alternate endpoint replaced the first UDP route";
+            return false;
+        }
+
+        if (UdpServer.BindEndpointForTesting(
+                nickname, false, udpAlternate, 0x55555555, false, 11,
+                out GenerationEndpointBinding advanced) != EndpointBindResult.AdvancedGeneration ||
+            !advanced.Endpoint.Equals(udpAlternate) ||
+            UdpServer.BindEndpointForTesting(
+                nickname, false, udpFirst, 0x66666666, false, 10, out _) !=
+            EndpointBindResult.StaleGeneration)
+        {
+            failure = "generation advancement/stale rejection was incorrect";
+            return false;
+        }
+
+        const string raceNickname = "UdpFirstBindRace";
+        var results = new ConcurrentBag<EndpointBindResult>();
+        using Barrier barrier = new Barrier(2);
+        Parallel.Invoke(
+            () =>
+            {
+                barrier.SignalAndWait();
+                results.Add(UdpServer.BindEndpointForTesting(
+                    raceNickname,
+                    false,
+                    udpFirst,
+                    1,
+                    false,
+                    20,
+                    out _));
+            },
+            () =>
+            {
+                barrier.SignalAndWait();
+                results.Add(UdpServer.BindEndpointForTesting(
+                    raceNickname,
+                    false,
+                    udpAlternate,
+                    2,
+                    false,
+                    20,
+                    out _));
+            });
+
+        if (results.Count(result => result == EndpointBindResult.Bound) != 1 ||
+            results.Count(result => result == EndpointBindResult.EndpointMismatch) != 1 ||
+            !UdpServer.TryGetEndpointForTesting(
+                raceNickname,
+                false,
+                out GenerationEndpointBinding raceWinner) ||
+            (!raceWinner.Endpoint.Equals(udpFirst) &&
+             !raceWinner.Endpoint.Equals(udpAlternate)))
+        {
+            failure = "concurrent first bind did not produce exactly one winner";
+            return false;
+        }
+
+        failure = string.Empty;
+        return true;
+    }
+    finally
+    {
+        UdpServer.ClearEndpointBindingsForTesting();
+    }
+}
+
+static bool RunItemPickupContextSmokeTests(out string failure)
+{
+    byte[] capturedData = Convert.FromHexString(
+        "25080000F025770002017D00023C1CF343F69EED4328367D41");
+    ItemPickupContext pickup = SlotData.ParseItemPickupContext(capturedData, 5);
+    if (pickup.LiveRank != 5 ||
+        pickup.X < 486f || pickup.X >= 487f ||
+        pickup.Y < 475f || pickup.Y >= 476f ||
+        pickup.Z < 15f || pickup.Z >= 16f)
+    {
+        failure =
+            $"captured GameSlot context decoded as rank={pickup.LiveRank}, " +
+            $"xyz=({pickup.X}, {pickup.Y}, {pickup.Z})";
+        return false;
+    }
+
+    ItemProbabilityRankBand[] expectedEightRacerBands =
+    {
+        ItemProbabilityRankBand.Top,
+        ItemProbabilityRankBand.High,
+        ItemProbabilityRankBand.High,
+        ItemProbabilityRankBand.Middle,
+        ItemProbabilityRankBand.Middle,
+        ItemProbabilityRankBand.Low,
+        ItemProbabilityRankBand.Low,
+        ItemProbabilityRankBand.Low
+    };
+    for (int rank = 0; rank < expectedEightRacerBands.Length; rank++)
+    {
+        ItemProbabilityRankBand actual = ItemProbabilityService.ResolveRankBand(
+            ItemProbabilityRankBand.Live,
+            rank,
+            expectedEightRacerBands.Length);
+        if (actual != expectedEightRacerBands[rank])
+        {
+            failure =
+                $"rank {rank} mapped to {actual}, expected {expectedEightRacerBands[rank]}";
+            return false;
+        }
+    }
+
+    if (ItemProbabilityService.ResolveRankBand(
+            ItemProbabilityRankBand.Live,
+            -1,
+            8) != ItemProbabilityRankBand.Combined ||
+        ItemProbabilityService.ResolveRankBand(
+            ItemProbabilityRankBand.High,
+            7,
+            8) != ItemProbabilityRankBand.High)
+    {
+        failure = "missing live context or a fixed UI override did not preserve its fallback";
+        return false;
+    }
+
+    failure = string.Empty;
+    return true;
+}
+
+static List<ItemProbabilityEntry> CreateRankSpecificItemTable()
+{
+    return new List<ItemProbabilityEntry>
+    {
+        new ItemProbabilityEntry { ItemId = 101, Name = "top", TopWeight = 1 },
+        new ItemProbabilityEntry { ItemId = 102, Name = "high", HighWeight = 1 },
+        new ItemProbabilityEntry { ItemId = 103, Name = "middle", MiddleWeight = 1 },
+        new ItemProbabilityEntry { ItemId = 104, Name = "low", LowWeight = 1 }
+    };
+}
+
+static bool RunUiLogBatchSmoke(out string failure)
+{
+    List<string> writes = new List<string>();
+    UiLogTextWriter writer = new UiLogTextWriter(writes.Add, "[trace] ");
+    writer.Write("one\ntwo\nthree\n");
+    string expected = string.Join(
+        Environment.NewLine,
+        "[trace] one",
+        "[trace] two",
+        "[trace] three");
+    if (writes.Count != 1 || writes[0] != expected)
+    {
+        failure = "a bounded Console batch was split into multiple WinForms updates";
+        return false;
+    }
+
+    failure = string.Empty;
+    return true;
+}
+
+static bool RunBasicPacketTraceSmoke(out string failure)
+{
+    string directory = CreateTraceTestDirectory("basic");
+    TextWriter originalOut = Console.Out;
+    StringWriter traceConsole = new StringWriter();
+    string path = string.Empty;
+    try
+    {
+        Console.SetOut(traceConsole);
+        PacketTrace.Configure(true, directory);
+        path = PacketTrace.TracePath;
+        byte[] payload = CreateLoginTracePayload();
+        PacketTrace.LogPacket(
+            "TCP",
+            "RX",
+            new IPEndPoint(IPAddress.Loopback, 39312),
+            new IPEndPoint(IPAddress.Loopback, 50000),
+            "TraceUser",
+            payload,
+            0,
+            "smoke=true",
+            payload);
+        byte[] streamingPayload = Enumerable.Range(0, 3000)
+            .Select(index => (byte)(index % 251))
+            .ToArray();
+        PacketTrace.LogPacket(
+            "UDP",
+            "TX",
+            null,
+            null,
+            "TraceUser",
+            streamingPayload,
+            -1,
+            "streaming-hex=true");
+        PacketTrace.LogDetailEvent(
+            "LOGIN-TCP",
+            "ITEM-PICKUP-DETAIL",
+            null,
+            null,
+            "TraceUser",
+            "rank=2; xyz=(1,2,3)");
+        PacketTrace.Stop();
+    }
+    catch (Exception exception)
+    {
+        failure = $"basic trace threw {exception}";
+        return false;
+    }
+    finally
+    {
+        PacketTrace.Stop();
+        Console.SetOut(originalOut);
+    }
+
+    try
+    {
+        string uiOutput = traceConsole.ToString();
+        string fileOutput = File.Exists(path) ? File.ReadAllText(path) : string.Empty;
+        string expectedStreamingHex =
+            "HEX  | " +
+            BitConverter.ToString(
+                Enumerable.Range(0, 3000)
+                    .Select(index => (byte)(index % 251))
+                    .ToArray())
+                .Replace("-", " ");
+        if (uiOutput.Contains("HEX  |", StringComparison.Ordinal) ||
+            uiOutput.Contains("WIRE |", StringComparison.Ordinal) ||
+            uiOutput.Contains("ITEM-PICKUP-DETAIL", StringComparison.Ordinal) ||
+            !uiOutput.Contains("name=PqLogin", StringComparison.Ordinal) ||
+            !fileOutput.Contains("HEX  |", StringComparison.Ordinal) ||
+            !fileOutput.Contains("WIRE |", StringComparison.Ordinal) ||
+            !fileOutput.Contains("ITEM-PICKUP-DETAIL", StringComparison.Ordinal) ||
+            !fileOutput.Contains(expectedStreamingHex, StringComparison.Ordinal) ||
+            !fileOutput.Contains("# stopped=", StringComparison.Ordinal))
+        {
+            failure = "basic UI/file separation or drain footer was incorrect";
+            return false;
+        }
+
+        failure = string.Empty;
+        return true;
+    }
+    finally
+    {
+        DeleteTraceTestDirectory(directory);
+    }
+}
+
+static bool RunConcurrentPacketTraceSmoke(out string failure)
+{
+    string directory = CreateTraceTestDirectory("concurrent");
+    TextWriter originalOut = Console.Out;
+    string path = string.Empty;
+    try
+    {
+        Console.SetOut(TextWriter.Null);
+        PacketTrace.Configure(true, directory);
+        path = PacketTrace.TracePath;
+        Parallel.For(0, 8, producer =>
+        {
+            byte[] payload = CreateLoginTracePayload();
+            for (int index = 0; index < 300; index++)
+            {
+                PacketTrace.LogPacket(
+                    producer % 2 == 0 ? "TCP" : "UDP",
+                    index % 2 == 0 ? "RX" : "TX",
+                    new IPEndPoint(IPAddress.Loopback, 39312 + producer),
+                    new IPEndPoint(IPAddress.Loopback, 50000 + producer),
+                    $"Trace{producer}",
+                    payload,
+                    0,
+                    $"producer={producer}; index={index}",
+                    payload);
+            }
+        });
+        PacketTrace.Stop();
+    }
+    catch (Exception exception)
+    {
+        failure = $"concurrent trace threw {exception}";
+        return false;
+    }
+    finally
+    {
+        PacketTrace.Stop();
+        Console.SetOut(originalOut);
+    }
+
+    try
+    {
+        string[] lines = File.Exists(path) ? File.ReadAllLines(path) : Array.Empty<string>();
+        long previousSequence = 0;
+        foreach (string line in lines)
+        {
+            if (!line.Contains(" | seq=", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (!TryReadTraceSequence(line, out long sequence) || sequence <= previousSequence)
+            {
+                failure = $"file sequence was not strictly increasing: previous={previousSequence}, line={line}";
+                return false;
+            }
+            previousSequence = sequence;
+        }
+
+        string footer = lines.LastOrDefault(line => line.StartsWith("# stopped=", StringComparison.Ordinal));
+        if (footer == null ||
+            !TryReadFooterMetric(footer, "attempted", out long attempted) ||
+            !TryReadFooterMetric(footer, "enqueued", out long enqueued) ||
+            !TryReadFooterMetric(footer, "written", out long written) ||
+            !TryReadFooterMetric(footer, "dropped", out long dropped) ||
+            !TryReadFooterMetric(footer, "shutdownRejected", out long shutdownRejected) ||
+            written != enqueued ||
+            attempted != enqueued + dropped + shutdownRejected)
+        {
+            failure = $"concurrent footer accounting was inconsistent: {footer ?? "<missing>"}";
+            return false;
+        }
+
+        failure = string.Empty;
+        return true;
+    }
+    finally
+    {
+        DeleteTraceTestDirectory(directory);
+    }
+}
+
+static bool RunPacketTraceQueueCapacitySmoke(out string failure)
+{
+    string directory = CreateTraceTestDirectory("capacity");
+    TextWriter originalOut = Console.Out;
+    bool writerPaused = false;
+    try
+    {
+        Console.SetOut(TextWriter.Null);
+        PacketTrace.Configure(true, directory);
+        writerPaused = PacketTrace.PauseDetailWriterForTesting(2000);
+        if (!writerPaused)
+        {
+            failure = "detail writer did not enter the deterministic test pause";
+            return false;
+        }
+
+        byte[] payload = CreateLoginTracePayload();
+        const int attempts = 3000;
+        for (int index = 0; index < attempts; index++)
+        {
+            PacketTrace.LogPacket(
+                "TCP",
+                "RX",
+                null,
+                null,
+                "Capacity",
+                payload,
+                0,
+                $"index={index}",
+                payload);
+        }
+
+        PacketTrace.PacketTraceDiagnostics diagnostics =
+            PacketTrace.GetDiagnosticsForTesting();
+        if (diagnostics.Attempted != attempts ||
+            diagnostics.DetailDropped == 0 ||
+            diagnostics.Enqueued + diagnostics.DetailDropped != attempts ||
+            diagnostics.PacketSnapshots != diagnostics.Enqueued)
+        {
+            failure =
+                "bounded admission copied dropped payloads or miscounted records: " +
+                $"attempted={diagnostics.Attempted}, enqueued={diagnostics.Enqueued}, " +
+                $"dropped={diagnostics.DetailDropped}, snapshots={diagnostics.PacketSnapshots}";
+            return false;
+        }
+
+        failure = string.Empty;
+        return true;
+    }
+    catch (Exception exception)
+    {
+        failure = $"capacity trace threw {exception}";
+        return false;
+    }
+    finally
+    {
+        if (writerPaused)
+        {
+            PacketTrace.ResumeDetailWriterForTesting();
+        }
+        PacketTrace.Stop();
+        Console.SetOut(originalOut);
+        DeleteTraceTestDirectory(directory);
+    }
+}
+
+static bool RunPacketTraceBlockedUiSmoke(out string failure)
+{
+    string directory = CreateTraceTestDirectory("blocked-ui");
+    TextWriter originalOut = Console.Out;
+    TextWriter originalError = Console.Error;
+    BlockingTextWriter blockingWriter = new BlockingTextWriter();
+    try
+    {
+        Console.SetOut(TextWriter.Null);
+        Console.SetError(TextWriter.Null);
+        PacketTrace.Configure(true, directory);
+        Console.SetOut(blockingWriter);
+        PacketTrace.LogEvent("TCP", "BLOCK-UI", null, null, null, "smoke=true");
+        if (!blockingWriter.WaitUntilWriteEntered(2000))
+        {
+            failure = "UI summary worker did not reach the blocking writer";
+            return false;
+        }
+
+        Stopwatch producerTimer = Stopwatch.StartNew();
+        byte[] payload = CreateLoginTracePayload();
+        for (int index = 0; index < 100; index++)
+        {
+            PacketTrace.LogPacket(
+                "TCP", "RX", null, null, "BlockedUi", payload, 0, null, payload);
+        }
+        producerTimer.Stop();
+        if (producerTimer.Elapsed > TimeSpan.FromMilliseconds(500))
+        {
+            failure = $"network-side logging blocked on UI output for {producerTimer.Elapsed}";
+            return false;
+        }
+
+        Stopwatch stopTimer = Stopwatch.StartNew();
+        PacketTrace.Stop();
+        stopTimer.Stop();
+        if (stopTimer.Elapsed > TimeSpan.FromSeconds(2))
+        {
+            failure = $"bounded shutdown waited too long for blocked UI: {stopTimer.Elapsed}";
+            return false;
+        }
+
+        failure = string.Empty;
+        return true;
+    }
+    catch (Exception exception)
+    {
+        failure = $"blocked-UI trace threw {exception}";
+        return false;
+    }
+    finally
+    {
+        blockingWriter.Release();
+        SpinWait.SpinUntil(() => blockingWriter.CompletedWrites >= 3, 1000);
+        PacketTrace.Stop();
+        Console.SetOut(originalOut);
+        Console.SetError(originalError);
+        DeleteTraceTestDirectory(directory);
+    }
+}
+
+static bool RunPacketTraceWriterRecoverySmoke(out string failure)
+{
+    string directory = CreateTraceTestDirectory("recovery");
+    TextWriter originalOut = Console.Out;
+    TextWriter originalError = Console.Error;
+    try
+    {
+        Console.SetOut(TextWriter.Null);
+        Console.SetError(TextWriter.Null);
+        PacketTrace.Configure(true, directory);
+        PacketTrace.InjectWriterFailureForTesting();
+        if (!SpinWait.SpinUntil(() => !PacketTrace.Enabled, 3000))
+        {
+            failure = "writer failure did not disable the active trace worker";
+            return false;
+        }
+
+        PacketTrace.Configure(true, directory);
+        string restartedPath = PacketTrace.TracePath;
+        byte[] payload = CreateLoginTracePayload();
+        PacketTrace.LogPacket(
+            "TCP", "RX", null, null, "Recovery", payload, 0, "restart=true", payload);
+        PacketTrace.Stop();
+        string restartedFile = File.Exists(restartedPath)
+            ? File.ReadAllText(restartedPath)
+            : string.Empty;
+        if (!restartedFile.Contains("name=PqLogin", StringComparison.Ordinal) ||
+            !restartedFile.Contains("# stopped=", StringComparison.Ordinal))
+        {
+            failure = "trace worker did not restart cleanly after writer failure";
+            return false;
+        }
+
+        failure = string.Empty;
+        return true;
+    }
+    catch (Exception exception)
+    {
+        failure = $"writer recovery trace threw {exception}";
+        return false;
+    }
+    finally
+    {
+        PacketTrace.Stop();
+        Console.SetOut(originalOut);
+        Console.SetError(originalError);
+        DeleteTraceTestDirectory(directory);
+    }
+}
+
+static byte[] CreateLoginTracePayload()
+{
+    return BitConverter.GetBytes(Adler32Helper.GenerateAdler32_ASCII("PqLogin", 0));
+}
+
+static string CreateTraceTestDirectory(string label)
+{
+    return Path.Combine(
+        Path.GetTempPath(),
+        $"KartRider-P5136-trace-{label}-{Guid.NewGuid():N}");
+}
+
+static void DeleteTraceTestDirectory(string directory)
+{
+    if (Directory.Exists(directory))
+    {
+        Directory.Delete(directory, true);
+    }
+}
+
+static bool TryReadTraceSequence(string line, out long sequence)
+{
+    const string marker = " | seq=";
+    int start = line.IndexOf(marker, StringComparison.Ordinal);
+    if (start < 0)
+    {
+        sequence = 0;
+        return false;
+    }
+
+    start += marker.Length;
+    int end = line.IndexOf(' ', start);
+    string value = end < 0 ? line.Substring(start) : line.Substring(start, end - start);
+    return long.TryParse(value, out sequence);
+}
+
+static bool TryReadFooterMetric(string footer, string name, out long value)
+{
+    string marker = name + "=";
+    int start = footer.IndexOf(marker, StringComparison.Ordinal);
+    if (start < 0)
+    {
+        value = 0;
+        return false;
+    }
+
+    start += marker.Length;
+    int end = footer.IndexOf(' ', start);
+    string text = end < 0 ? footer.Substring(start) : footer.Substring(start, end - start);
+    return long.TryParse(text, out value);
+}
+
+static bool RunRoomNameSpeedKeywordSmokeTests(out string failure)
+{
+    (string RoomName, string Version, byte Speed, byte Infinite)[] cases =
+    {
+        ("[S0] 느린 방", "国服", 3, byte.MaxValue),
+        ("s1 연습", "国服", 0, byte.MaxValue),
+        ("빠른방-S2", "国服", 1, byte.MaxValue),
+        ("S3_고속", "国服", 2, byte.MaxValue),
+        ("[S4] 무한부스터", "国服", 4, 4),
+        ("S6 진무한", "国服", 6, 6),
+        ("KR-L2 클래식", "韩服复古", 3, byte.MaxValue),
+        ("PRO 클래식", "国服复古", 5, byte.MaxValue)
+    };
+
+    foreach ((string roomName, string version, byte speed, byte infinite) in cases)
+    {
+        var parsed = SpeedType.Parse(roomName);
+        if (!parsed.HasValue ||
+            parsed.Value.version != version ||
+            parsed.Value.speed != speed ||
+            parsed.Value.infinite != infinite)
+        {
+            failure = roomName;
+            return false;
+        }
+    }
+
+    if (SpeedType.Parse("普通 无限 구형 키워드").HasValue ||
+        SpeedType.Parse("TESTS1ROOM").HasValue ||
+        SpeedType.Parse("S10").HasValue)
+    {
+        failure = "legacy or embedded keyword was accepted";
+        return false;
+    }
+
+    failure = null;
+    return true;
+}
+
+static (Socket Client, Socket Server) CreateSocketPair()
+{
+    TcpListener listener = new TcpListener(IPAddress.Loopback, 0);
+    listener.Start();
+    try
+    {
+        Task<Socket> acceptTask = listener.AcceptSocketAsync();
+        Socket client = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+        client.Connect((IPEndPoint)listener.LocalEndpoint);
+        Socket server = acceptTask.GetAwaiter().GetResult();
+        return (client, server);
+    }
+    finally
+    {
+        listener.Stop();
+    }
+}
+
+static byte[] ReceiveExact(Socket socket, int length)
+{
+    byte[] buffer = new byte[length];
+    int offset = 0;
+    while (offset < buffer.Length)
+    {
+        int received = socket.Receive(buffer, offset, buffer.Length - offset, SocketFlags.None);
+        if (received <= 0)
+            throw new EndOfStreamException("Socket closed before the expected frame was received.");
+        offset += received;
+    }
+    return buffer;
+}
 
 static ushort FindAvailablePortBlock()
 {
@@ -204,4 +1766,37 @@ static ushort FindAvailablePortBlock()
     }
 
     throw new InvalidOperationException("Could not find an available P5136 port block for the smoke test.");
+}
+
+sealed class BlockingTextWriter : TextWriter
+{
+    private readonly ManualResetEventSlim entered = new ManualResetEventSlim(false);
+    private readonly ManualResetEventSlim released = new ManualResetEventSlim(false);
+    private int completedWrites;
+
+    public override Encoding Encoding => Encoding.UTF8;
+
+    public override void Write(string value)
+    {
+        entered.Set();
+        released.Wait();
+        Interlocked.Increment(ref completedWrites);
+    }
+
+    public override void Write(char value)
+    {
+        Write(value.ToString());
+    }
+
+    public bool WaitUntilWriteEntered(int timeoutMilliseconds)
+    {
+        return entered.Wait(timeoutMilliseconds);
+    }
+
+    public int CompletedWrites => Volatile.Read(ref completedWrites);
+
+    public void Release()
+    {
+        released.Set();
+    }
 }

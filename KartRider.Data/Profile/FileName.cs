@@ -3,6 +3,7 @@ using KartRider;
 using RiderData;
 using System;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.IO;
 using System.Linq;
 using System.Xml;
@@ -43,7 +44,8 @@ namespace Profile
         public static string SpecialKartConfig = Path.GetFullPath(Path.Combine(ProfileDir, @"SpecialKartConfig.json"));
         public static string Coupon = Path.GetFullPath(Path.Combine(ProfileDir, @"Coupon.json"));
 
-        public static Dictionary<string, fileName> FileNames = new Dictionary<string, fileName>();
+        public static ConcurrentDictionary<string, fileName> FileNames =
+            new ConcurrentDictionary<string, fileName>(StringComparer.OrdinalIgnoreCase);
 
         public static void Load(string nickname)
         {

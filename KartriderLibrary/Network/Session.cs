@@ -32,6 +32,10 @@ namespace KartRider.Common.Network
 
         private int mSending = 0;
 
+        private readonly object mSendLock = new object();
+
+        private int mInitialHandshakeQueued = 0;
+
         private string _label = "";
 
         public string Label
@@ -147,32 +151,58 @@ namespace KartRider.Common.Network
                 }
                 else if ((int)next.Buffer.Length >= next.Length)
                 {
-                    byte[] buffer = next.Buffer;
-                    byte[] numArray = new byte[(int)buffer.Length + (this.SIV != 0 ? 8 : 4)];
-                    if (this.SIV != 0)
+                    if (!next.Prepared)
                     {
-                        uint num = KRPacketCrypto.HashEncrypt(buffer, (uint)buffer.Length, this.SIV);
-                        Buffer.BlockCopy(BitConverter.GetBytes((int)((ulong)this.SIV ^ (ulong)((int)buffer.Length + 4) ^ (ulong)4164199944)), 0, numArray, 0, 4);
-                        Buffer.BlockCopy(BitConverter.GetBytes(this.SIV ^ num ^ 3388492432), 0, numArray, (int)numArray.Length - 4, 4);
-                        this.SIV += 21446425;
-                        if (this.SIV == 0)
+                        byte[] logicalPacket = next.Buffer;
+                        bool encrypted = next.Encrypted && this.SIV != 0;
+                        byte[] framedPacket = new byte[logicalPacket.Length + (encrypted ? 8 : 4)];
+                        if (encrypted)
                         {
-                            this.SIV = 1;
+                            uint sendIv = this.SIV;
+                            uint checksum = KRPacketCrypto.HashEncrypt(
+                                logicalPacket,
+                                (uint)logicalPacket.Length,
+                                sendIv);
+                            Buffer.BlockCopy(
+                                BitConverter.GetBytes((int)((ulong)sendIv ^ (ulong)(logicalPacket.Length + 4) ^ 4164199944u)),
+                                0,
+                                framedPacket,
+                                0,
+                                4);
+                            Buffer.BlockCopy(
+                                BitConverter.GetBytes(sendIv ^ checksum ^ 3388492432u),
+                                0,
+                                framedPacket,
+                                framedPacket.Length - 4,
+                                4);
+                            this.SIV += 21446425;
+                            if (this.SIV == 0)
+                            {
+                                this.SIV = 1;
+                            }
                         }
+                        else
+                        {
+                            Buffer.BlockCopy(
+                                BitConverter.GetBytes(logicalPacket.Length),
+                                0,
+                                framedPacket,
+                                0,
+                                4);
+                        }
+
+                        Buffer.BlockCopy(logicalPacket, 0, framedPacket, 4, logicalPacket.Length);
+                        next.Prepare(framedPacket);
                     }
-                    else
-                    {
-                        Buffer.BlockCopy(BitConverter.GetBytes((int)buffer.Length), 0, numArray, 0, 4);
-                    }
-                    Buffer.BlockCopy(buffer, 0, numArray, 4, (int)buffer.Length);
-                    this.mWriteEventArgs.SetBuffer(numArray, 0, (int)numArray.Length);
+
+                    this.mWriteEventArgs.SetBuffer(next.Buffer, next.Start, next.Length);
                     PacketTrace.LogEvent(
                         "TCP",
                         "TX-BEGIN",
                         this.GetLocalEndPoint(),
                         this.GetRemoteEndPoint(),
                         this.Nickname,
-                        $"wireLength={numArray.Length}; encrypted={this.SIV != 0}");
+                        $"wireLength={next.Length}; encrypted={next.Encrypted}");
                     next = null;
                     try
                     {
@@ -232,19 +262,60 @@ namespace KartRider.Common.Network
                     this.GetRemoteEndPoint(),
                     this.Nickname,
                     "session closed");
-                this.OnDisconnect();
-                this.OnDisconnected?.Invoke(this);
                 try
                 {
-                    this.Socket.Shutdown(SocketShutdown.Both);
-                    this.Socket.Close();
+                    this.OnDisconnect();
                 }
-                catch
+                catch (Exception exception)
                 {
+                    PacketTrace.LogEvent(
+                        "TCP",
+                        "DISCONNECT-CLEANUP-ERROR",
+                        this.GetLocalEndPoint(),
+                        this.GetRemoteEndPoint(),
+                        this.Nickname,
+                        exception.ToString());
                 }
-                this.mWriteEventArgs.Completed -= new EventHandler<SocketAsyncEventArgs>((object s, SocketAsyncEventArgs a) => this.EndSend(a));
-                this.mWriteEventArgs.Dispose();
-                this.mWriteEventArgs = null;
+
+                try
+                {
+                    this.OnDisconnected?.Invoke(this);
+                }
+                catch (Exception exception)
+                {
+                    PacketTrace.LogEvent(
+                        "TCP",
+                        "DISCONNECT-EVENT-ERROR",
+                        this.GetLocalEndPoint(),
+                        this.GetRemoteEndPoint(),
+                        this.Nickname,
+                        exception.ToString());
+                }
+                finally
+                {
+                    try
+                    {
+                        this.Socket.Shutdown(SocketShutdown.Both);
+                    }
+                    catch
+                    {
+                    }
+                    try
+                    {
+                        this.Socket.Close();
+                    }
+                    catch
+                    {
+                    }
+                    try
+                    {
+                        this.mWriteEventArgs?.Dispose();
+                    }
+                    catch
+                    {
+                    }
+                    this.mWriteEventArgs = null;
+                }
             }
         }
 
@@ -321,10 +392,21 @@ namespace KartRider.Common.Network
                                         0,
                                         $"frameLength={wireFrame.Length}; encrypted={receiveIv != 0}; iv=0x{receiveIv:X8}; checksum={(checksumValid ? "OK" : "BAD")}",
                                         wireFrame);
+                                    if (receiveIv != 0 && !checksumValid)
+                                    {
+                                        PacketTrace.LogEvent(
+                                            "TCP",
+                                            "RX-DROP",
+                                            this.GetLocalEndPoint(),
+                                            this.GetRemoteEndPoint(),
+                                            this.Nickname,
+                                            "invalid encrypted frame checksum");
+                                        this.Disconnect();
+                                        return;
+                                    }
                                     if (this.mDisconnected == 0)
                                     {
-                                        var client = ClientManager.GetParent(Nickname);
-                                        if (client == null)
+                                        if (!ClientManager.IsRegistered(this))
                                         {
                                             PacketTrace.LogEvent(
                                                 "TCP",
@@ -393,17 +475,34 @@ namespace KartRider.Common.Network
                         this.GetRemoteEndPoint(),
                         this.Nickname,
                         $"bytesTransferred={pArguments.BytesTransferred}; socketError={pArguments.SocketError}");
-                    if (pArguments.BytesTransferred > 0)
+                    if (pArguments.BytesTransferred > 0 &&
+                        pArguments.SocketError == SocketError.Success)
                     {
-                        if (this.mSendSegments.Next.Advance(pArguments.BytesTransferred))
+                        bool sendNext;
+                        lock (this.mSendLock)
                         {
-                            this.mSendSegments.Dequeue();
+                            ByteArraySegment current = this.mSendSegments.Next;
+                            if (current == null)
+                            {
+                                throw new InvalidOperationException(
+                                    "The send queue completed without an active segment.");
+                            }
+
+                            if (current.Advance(pArguments.BytesTransferred))
+                            {
+                                this.mSendSegments.Dequeue();
+                            }
+
+                            sendNext = this.mSendSegments.Next != null;
+                            if (!sendNext)
+                            {
+                                // Enqueue and this transition use the same lock,
+                                // so a producer cannot miss the pump hand-off.
+                                this.mSending = 0;
+                            }
                         }
-                        if (this.mSendSegments.Next == null)
-                        {
-                            this.mSending = 0;
-                        }
-                        else
+
+                        if (sendNext)
                         {
                             this.BeginSend();
                         }
@@ -476,7 +575,32 @@ namespace KartRider.Common.Network
             try
             {
                 byte[] packet = pPacket.ToArray();
-                if (this.mDisconnected == 0 && this._socket != null && this._socket.Connected)
+                bool startSend = false;
+                string dropReason = null;
+                lock (this.mSendLock)
+                {
+                    if (this.mDisconnected != 0 || this._socket == null || !this._socket.Connected)
+                    {
+                        dropReason = "disconnected";
+                    }
+                    else if (this.mInitialHandshakeQueued == 0)
+                    {
+                        // An unauthenticated socket must never receive a global
+                        // broadcast before PcFirstMessage.
+                        dropReason = "initial-handshake-pending";
+                    }
+                    else
+                    {
+                        this.mSendSegments.Enqueue(new ByteArraySegment(packet, true));
+                        if (this.mSending == 0)
+                        {
+                            this.mSending = 1;
+                            startSend = true;
+                        }
+                    }
+                }
+
+                if (dropReason == null)
                 {
                     PacketTrace.LogPacket(
                         "TCP",
@@ -487,11 +611,8 @@ namespace KartRider.Common.Network
                         packet,
                         0,
                         "stage=QUEUE");
-                    this.mSendSegments.Enqueue(new ByteArraySegment(packet, true));
-                    if (Interlocked.CompareExchange(ref this.mSending, 1, 0) == 0)
-                    {
+                    if (startSend)
                         this.BeginSend();
-                    }
                 }
                 else
                 {
@@ -503,7 +624,7 @@ namespace KartRider.Common.Network
                         this.Nickname,
                         packet,
                         0,
-                        "stage=DROP; reason=disconnected");
+                        $"stage=DROP; reason={dropReason}");
                 }
             }
             catch (ObjectDisposedException objectDisposedException)
@@ -532,11 +653,98 @@ namespace KartRider.Common.Network
             }
         }
 
+        /// <summary>
+        /// Queues the protocol's first server frame as plaintext while making
+        /// the negotiated IV visible to the receive path before the frame can
+        /// reach the client. This closes the fast-response race where the
+        /// client's first encrypted request could otherwise be parsed with IV 0.
+        /// </summary>
+        public void SendInitialHandshake(OutPacket packet, uint iv)
+        {
+            if (packet == null)
+            {
+                throw new ArgumentNullException(nameof(packet));
+            }
+            if (iv == 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(iv));
+            }
+            try
+            {
+                byte[] payload = packet.ToArray();
+                bool startSend = false;
+                lock (this.mSendLock)
+                {
+                    if (this.mInitialHandshakeQueued != 0)
+                    {
+                        throw new InvalidOperationException("The initial handshake was already queued.");
+                    }
+                    if (this.mDisconnected != 0 || this._socket == null || !this._socket.Connected)
+                    {
+                        throw new InvalidOperationException("The session disconnected before its initial handshake.");
+                    }
+
+                    // Set IVs and enqueue the explicitly plaintext first frame
+                    // in one admission section. Normal Send calls cannot slip a
+                    // frame ahead of it.
+                    this.RIV = iv;
+                    this.SIV = iv;
+                    this.mInitialHandshakeQueued = 1;
+                    this.mSendSegments.Enqueue(new ByteArraySegment(payload, false));
+                    if (this.mSending == 0)
+                    {
+                        this.mSending = 1;
+                        startSend = true;
+                    }
+                }
+
+                PacketTrace.LogPacket(
+                    "TCP",
+                    "TX",
+                    this.GetLocalEndPoint(),
+                    this.GetRemoteEndPoint(),
+                    this.Nickname,
+                    payload,
+                    0,
+                    "stage=QUEUE; initial=true; encrypted=false");
+                if (startSend)
+                    this.BeginSend();
+            }
+            catch
+            {
+                this.Disconnect();
+                throw;
+            }
+        }
+
         public void SendRaw(byte[] pBuffer)
         {
             try
             {
-                if (this.mDisconnected == 0 && this._socket != null && this._socket.Connected)
+                bool startSend = false;
+                string dropReason = null;
+                lock (this.mSendLock)
+                {
+                    if (this.mDisconnected != 0 || this._socket == null || !this._socket.Connected)
+                    {
+                        dropReason = "disconnected";
+                    }
+                    else if (this.mInitialHandshakeQueued == 0)
+                    {
+                        dropReason = "initial-handshake-pending";
+                    }
+                    else
+                    {
+                        this.mSendSegments.Enqueue(new ByteArraySegment(pBuffer, false));
+                        if (this.mSending == 0)
+                        {
+                            this.mSending = 1;
+                            startSend = true;
+                        }
+                    }
+                }
+
+                if (dropReason == null)
                 {
                     PacketTrace.LogPacket(
                         "TCP",
@@ -547,11 +755,8 @@ namespace KartRider.Common.Network
                         pBuffer,
                         0,
                         "stage=QUEUE; raw=true");
-                    this.mSendSegments.Enqueue(new ByteArraySegment(pBuffer, false));
-                    if (Interlocked.CompareExchange(ref this.mSending, 1, 0) == 0)
-                    {
+                    if (startSend)
                         this.BeginSend();
-                    }
                 }
                 else
                 {
@@ -563,7 +768,7 @@ namespace KartRider.Common.Network
                         this.Nickname,
                         pBuffer,
                         0,
-                        "stage=DROP; reason=disconnected; raw=true");
+                        $"stage=DROP; reason={dropReason}; raw=true");
                 }
             }
             catch (ObjectDisposedException objectDisposedException)

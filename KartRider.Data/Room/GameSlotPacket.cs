@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using ExcData;
+using KartRider.Common.Network;
 using KartRider.Compatibility;
 using KartRider.IO.Packet;
 using Profile;
@@ -22,6 +23,10 @@ public class SlotData
         }
 
         Player player = RoomManager.GetPlayer(roomId, Parent.Client.Nickname);
+        if (player == null)
+        {
+            return;
+        }
         int id = iPacket.ReadInt();
         uint item = iPacket.ReadUInt();
         byte type = iPacket.ReadByte();
@@ -31,7 +36,7 @@ public class SlotData
             if (type <= 2)
             {
                 byte[] data1 = iPacket.ReadBytes(25);
-                iPacket.ReadShort();
+                short liveRank = iPacket.ReadShort();
                 iPacket.ReadByte();
                 byte[] data2 = iPacket.ReadBytes(4);
                 if (ClientBuildProfiles.Active.Build != ClientBuild.Korean5136)
@@ -47,7 +52,30 @@ public class SlotData
                     return;
                 }
                 byte[] blob = iPacket.ReadBytes((int)blobLength);
-                short skill = RandomItemSkill(Parent.Client.Nickname, room.GameType);
+                ItemPickupContext pickup = ParseItemPickupContext(data1, liveRank);
+                int racerCount;
+                lock (room)
+                {
+                    racerCount = room.GetCount();
+                    player.LastItemBoxRank = pickup.LiveRank;
+                    player.LastItemBoxX = pickup.X;
+                    player.LastItemBoxY = pickup.Y;
+                    player.LastItemBoxZ = pickup.Z;
+                }
+                short skill = RandomItemSkill(
+                    Parent.Client.Nickname,
+                    room.GameType,
+                    pickup.LiveRank,
+                    racerCount);
+                PacketTrace.LogDetailEvent(
+                    "LOGIN-TCP",
+                    "ITEM-PICKUP",
+                    null,
+                    null,
+                    Parent.Client.Nickname,
+                    $"playerId={id}; clientRank0={pickup.LiveRank}; " +
+                    $"displayRank={pickup.LiveRank + 1}; racers={racerCount}; " +
+                    $"xyz=({pickup.X:R},{pickup.Y:R},{pickup.Z:R}); item={skill}");
                 using (OutPacket oPacket = new OutPacket("GameSlotPacket"))
                 {
                     oPacket.WriteInt(id);
@@ -146,23 +174,37 @@ public class SlotData
         }
     }
 
-    public static short RandomItemSkill(string Nickname, byte gameType)
+    internal static ItemPickupContext ParseItemPickupContext(
+        byte[] data,
+        short liveRank)
     {
-        if (gameType == 2)
+        if (data == null || data.Length != 25)
         {
-            Random random = new Random();
-            int index = random.Next(MultyPlayer.itemProb_indi.Count);
-            short skill = MultyPlayer.itemProb_indi[index];
-            skill = GetItemSkill(Nickname, skill);
-            return skill;
+            throw new ArgumentException(
+                "P5136 item pickup context must be exactly 25 bytes.",
+                nameof(data));
         }
-        else if (gameType == 4)
+
+        return new ItemPickupContext(
+            liveRank,
+            BitConverter.ToSingle(data, 13),
+            BitConverter.ToSingle(data, 17),
+            BitConverter.ToSingle(data, 21));
+    }
+
+    public static short RandomItemSkill(
+        string Nickname,
+        byte gameType,
+        int liveRank = -1,
+        int racerCount = 0)
+    {
+        if (gameType == 2 || gameType == 4)
         {
-            Random random = new Random();
-            int index = random.Next(MultyPlayer.itemProb_team.Count);
-            short skill = MultyPlayer.itemProb_team[index];
-            skill = GetItemSkill(Nickname, skill);
-            return skill;
+            short skill = ItemProbabilityService.NextItem(
+                teamMode: gameType == 4,
+                liveRank,
+                racerCount);
+            return GetItemSkill(Nickname, skill);
         }
         return 0;
     }
@@ -287,4 +329,23 @@ public class SlotData
             MultyPlayer.BroadCast(roomId, oPacket, Nickname);
         }
     }
+}
+
+internal readonly struct ItemPickupContext
+{
+    public ItemPickupContext(short liveRank, float x, float y, float z)
+    {
+        LiveRank = liveRank;
+        X = x;
+        Y = y;
+        Z = z;
+    }
+
+    public short LiveRank { get; }
+
+    public float X { get; }
+
+    public float Y { get; }
+
+    public float Z { get; }
 }

@@ -6,7 +6,9 @@ using System.Drawing;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
+using System.Threading.Tasks;
 using System.Windows.Forms;
+using CancellationTokenSource = System.Threading.CancellationTokenSource;
 
 namespace KartRider.Connector
 {
@@ -28,7 +30,10 @@ namespace KartRider.Connector
 
         private IClientLaunchStrategy launchStrategy;
         private ClientLaunchContext launchContext;
+        private CancellationTokenSource activeProbeCancellation;
         private bool gameWasObserved;
+        private bool formClosing;
+        private bool launchBusy;
         private DateTime launchStartedAtUtc;
 
         public ConnectorForm(string gameDirectory, ClientBuildProfile profile)
@@ -187,8 +192,11 @@ namespace KartRider.Connector
             loginPortInput.Value = loginPort;
             RefreshEndpoint();
             AppendLog(
-                $"설정 로드: server={serverAddressTextBox.Text}:{loginPort}, " +
-                $"client={gameDirectory}");
+                $"설정 불러옴: 서버={serverAddressTextBox.Text}:{loginPort}, " +
+                $"클라이언트={gameDirectory}");
+            AppendLog(
+                $"접속기 빌드: {KartRider.CompileTime.Time}; " +
+                $"실행 파일={File.GetLastWriteTime(Application.ExecutablePath):yyyy-MM-dd HH:mm:ss}");
         }
 
         private void RefreshEndpoint()
@@ -223,8 +231,13 @@ namespace KartRider.Connector
             }
         }
 
-        private void LaunchButton_Click(object sender, EventArgs e)
+        private async void LaunchButton_Click(object sender, EventArgs e)
         {
+            if (launchBusy)
+            {
+                return;
+            }
+
             if (IsGameRunning())
             {
                 MessageBox.Show(
@@ -236,10 +249,22 @@ namespace KartRider.Connector
                 return;
             }
 
+            launchBusy = true;
+            launchButton.Enabled = false;
+            saveButton.Enabled = false;
             try
             {
                 (IPAddress serverAddress, ushort loginPort, ushort configuredPort, string username) =
                     SaveConnectorSettings();
+
+                statusLabel.ForeColor = Color.DarkOrange;
+                statusLabel.Text = "서버 네트워크 확인 중";
+                ushort diagnosticPort = profile.Ports.ResolveMessengerPort(configuredPort);
+                await VerifyServerReachabilityAsync(serverAddress, diagnosticPort);
+                if (formClosing || IsDisposed || Disposing)
+                {
+                    return;
+                }
 
                 string pinFile = Path.Combine(gameDirectory, "KartRider.pin");
                 string pinBackupFile = Path.Combine(gameDirectory, "KartRider-bak.pin");
@@ -257,7 +282,12 @@ namespace KartRider.Connector
                 gameWasObserved = IsGameRunning();
                 statusLabel.ForeColor = Color.ForestGreen;
                 statusLabel.Text = gameWasObserved ? "게임 실행 중" : "게임 시작 확인 중";
-                AppendLog($"게임 실행: server={serverAddress}:{loginPort}, username={username}");
+                if (profile.Build == ClientBuild.Korean5136)
+                    AppendLog($"P5136 PIN/XML/프로필 접속 주소 확인 완료: {serverAddress}:{loginPort}");
+                AppendLog($"게임 실행: 서버={serverAddress}:{loginPort}");
+            }
+            catch (OperationCanceledException) when (formClosing)
+            {
             }
             catch (Exception exception)
             {
@@ -266,6 +296,64 @@ namespace KartRider.Connector
                 launchContext = null;
                 ShowError("게임 실행 실패", exception);
             }
+            finally
+            {
+                launchBusy = false;
+                if (!IsDisposed && !Disposing)
+                {
+                    launchButton.Enabled = true;
+                    saveButton.Enabled = true;
+                }
+            }
+        }
+
+        private async Task VerifyServerReachabilityAsync(
+            IPAddress serverAddress,
+            ushort diagnosticPort)
+        {
+            AppendLog(
+                $"서버 TCP 연결 확인: 원격={serverAddress}:{diagnosticPort} " +
+                "(메신저 진단 포트)");
+            using TcpClient client = new TcpClient(AddressFamily.InterNetwork);
+            using CancellationTokenSource timeout =
+                new CancellationTokenSource(TimeSpan.FromSeconds(4));
+            activeProbeCancellation = timeout;
+            try
+            {
+                await client.ConnectAsync(serverAddress, diagnosticPort, timeout.Token);
+                if (formClosing || IsDisposed || Disposing)
+                {
+                    throw new OperationCanceledException(timeout.Token);
+                }
+            }
+            catch (OperationCanceledException) when (formClosing)
+            {
+                throw;
+            }
+            catch (OperationCanceledException exception)
+            {
+                throw new TimeoutException(
+                    $"서버 {serverAddress}:{diagnosticPort} TCP 연결이 4초 안에 완료되지 않았습니다.",
+                    exception);
+            }
+            catch (SocketException exception)
+            {
+                throw new InvalidOperationException(
+                    $"서버 {serverAddress}:{diagnosticPort} TCP 연결 실패 " +
+                    $"({exception.SocketErrorCode}): {exception.Message}",
+                    exception);
+            }
+            finally
+            {
+                if (ReferenceEquals(activeProbeCancellation, timeout))
+                {
+                    activeProbeCancellation = null;
+                }
+            }
+
+            AppendLog(
+                $"서버 TCP 연결 성공: 로컬={client.Client.LocalEndPoint}, " +
+                $"원격={client.Client.RemoteEndPoint}");
         }
 
         private (IPAddress Address, ushort LoginPort, ushort ConfiguredPort, string Username)
@@ -279,10 +367,13 @@ namespace KartRider.Connector
                 throw new InvalidDataException("서버 주소는 0.0.0.0이 아닌 IPv4 주소여야 합니다.");
             }
 
-            string username = usernameTextBox.Text.Trim();
-            if (string.IsNullOrWhiteSpace(username))
+            if (!ClientIdentityValidator.TryNormalize(
+                usernameTextBox.Text,
+                Path.Combine(gameDirectory, "Profile"),
+                out string username,
+                out string usernameError))
             {
-                throw new InvalidDataException("계정 이름을 입력하세요.");
+                throw new InvalidDataException(usernameError);
             }
 
             ushort loginPort = checked((ushort)loginPortInput.Value);
@@ -320,17 +411,25 @@ namespace KartRider.Connector
             }
 
             bool wasObserved = gameWasObserved;
-            launchStrategy.Restore(launchContext);
+            bool keepsPersistentEndpoint = profile.Build == ClientBuild.Korean5136;
+            if (!keepsPersistentEndpoint)
+                launchStrategy.Restore(launchContext);
             launchStrategy = null;
             launchContext = null;
             statusLabel.ForeColor = Color.DimGray;
             statusLabel.Text = wasObserved ? "게임 종료됨" : "게임이 바로 종료됨";
-            AppendLog(statusLabel.Text + "; 임시 접속 설정을 복원했습니다.");
+            AppendLog(
+                statusLabel.Text +
+                (keepsPersistentEndpoint
+                    ? "; P5136 접속 설정을 유지합니다."
+                    : "; 임시 접속 설정을 복원했습니다."));
             gameWasObserved = false;
         }
 
         private void ConnectorForm_FormClosing(object sender, FormClosingEventArgs e)
         {
+            formClosing = true;
+            activeProbeCancellation?.Cancel();
             launchStrategy?.Restore(launchContext);
         }
 

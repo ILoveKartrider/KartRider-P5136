@@ -36,7 +36,7 @@ namespace KartRider
             ProfileService.Save(Nickname, resetConfig);
             SpeedPatch.SpeedPatcData();
             //GameSupport.PrLogin();
-            Console.WriteLine("Login...OK");
+            Console.WriteLine("로그인 데이터 초기화 완료");
         }
     }
 }

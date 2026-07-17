@@ -103,10 +103,90 @@ public static class MultyPlayer
 
     static void Start(SessionGroup Parent, int roomId)
     {
+        GameRoom room = RoomManager.GetRoom(roomId);
+        if (room == null)
+        {
+            Console.WriteLine($"Room {roomId} does not exist.");
+            return;
+        }
+
+        var ready = new ConcurrentDictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        foreach (RoomMember member in room._slots.Concat(room.ObIDs))
+        {
+            if (member is Player player && !string.IsNullOrEmpty(player.Nickname))
+                ready[player.Nickname] = false;
+        }
+
+        long handshakeGeneration;
+        lock (room)
+        {
+            if (room.StartHandshakePending || room.StartTicks != 0)
+                return;
+
+            handshakeGeneration = ++room.StartHandshakeGeneration;
+            room.Ready = ready;
+            room.StartHandshakePending = true;
+        }
+
+        // Never hold ClientSession.Parent.m_lock while waiting for the other
+        // clients. Their readiness packets must be allowed to run immediately.
+        _ = WaitForRaceReadinessAsync(
+            Parent,
+            room,
+            ready,
+            handshakeGeneration);
+    }
+
+    private static async Task WaitForRaceReadinessAsync(
+        SessionGroup parent,
+        GameRoom room,
+        ConcurrentDictionary<string, bool> ready,
+        long handshakeGeneration)
+    {
+        DateTime deadline = DateTime.UtcNow.AddSeconds(30);
+        while (DateTime.UtcNow < deadline)
+        {
+            if (!ReferenceEquals(RoomManager.GetRoom(room.RoomId), room))
+                return;
+
+            lock (room)
+            {
+                if (!room.StartHandshakePending ||
+                    room.StartTicks != 0 ||
+                    room.StartHandshakeGeneration != handshakeGeneration ||
+                    !ReferenceEquals(room.Ready, ready))
+                    return;
+            }
+
+            if (ready.Values.All(isReady => isReady))
+            {
+                Set_startTrigger(parent, room, handshakeGeneration);
+                return;
+            }
+
+            await Task.Delay(100).ConfigureAwait(false);
+        }
+
+        lock (room)
+        {
+            if (!room.StartHandshakePending ||
+                room.StartTicks != 0 ||
+                room.StartHandshakeGeneration != handshakeGeneration ||
+                !ReferenceEquals(room.Ready, ready))
+                return;
+        }
+        Set_startTrigger(parent, room, handshakeGeneration);
+    }
+
+    // Retained temporarily as a readable record of the legacy behavior. It is
+    // intentionally not called; the asynchronous implementation above avoids
+    // blocking the receive callback for up to thirty seconds.
+    static void StartBlockingLegacy(SessionGroup Parent, int roomId)
+    {
         var room = RoomManager.GetRoom(roomId);
         if (room == null)
         {
-            Console.WriteLine($"房间 {roomId} 不存在");
+            Console.WriteLine($"방 {roomId}이(가) 없습니다.");
             return;
         }
 
@@ -157,7 +237,7 @@ public static class MultyPlayer
         // 场景1：等待所有值变为true（循环直到全部为true）
         while (!allReady)
         {
-            Console.WriteLine("存在未就绪的玩家，等待中...");
+            Console.WriteLine("준비하지 않은 플레이어가 있어 대기합니다...");
 
             // 模拟：重新检查字典值（实际场景中可替换为刷新数据的逻辑）
             allReady = true;
@@ -189,27 +269,50 @@ public static class MultyPlayer
         }
     }
 
-    static void Set_startTrigger(SessionGroup Parent, GameRoom room)
+    static void Set_startTrigger(
+        SessionGroup Parent,
+        GameRoom room,
+        long handshakeGeneration = 0)
     {
+        if (handshakeGeneration == 0)
+            handshakeGeneration = room.StartHandshakeGeneration;
         var onceTimer = new System.Timers.Timer();
         onceTimer.Interval = 1000;
-        onceTimer.Elapsed += new System.Timers.ElapsedEventHandler((s, _event) => startTrigger(Parent, room, s, _event));
+        onceTimer.Elapsed += new System.Timers.ElapsedEventHandler(
+            (s, _event) => startTrigger(
+                Parent,
+                room,
+                handshakeGeneration,
+                s,
+                _event));
         onceTimer.AutoReset = false;
         onceTimer.Start();
     }
 
-    static void startTrigger(SessionGroup Parent, GameRoom room, object sender, System.Timers.ElapsedEventArgs e)
+    static void startTrigger(
+        SessionGroup Parent,
+        GameRoom room,
+        long handshakeGeneration,
+        object sender,
+        System.Timers.ElapsedEventArgs e)
     {
         lock (room)
         {
-            if (room.StartTicks != 0)
+            if (room.StartTicks != 0 ||
+                !room.StartHandshakePending ||
+                room.StartHandshakeGeneration != handshakeGeneration)
             {
-                room.StartHandshakePending = false;
-                Console.WriteLine("startTrigger: room.StartTicks 已经设置,跳过执行");
+                Console.WriteLine("startTrigger: 방 시작 시간이 이미 설정되어 있어 건너뜁니다.");
                 return;
             }
             room.StartTicks = ConvertTick() + 3000;
             room.StartHandshakePending = false;
+            room.TimeData = new Dictionary<int, uint>();
+            room.Ranking = new Dictionary<int, int>();
+            room.EndTicks = 0;
+            room.SettlementClosed = false;
+            room.Ready = new ConcurrentDictionary<string, bool>(
+                StringComparer.OrdinalIgnoreCase);
         }
         using (OutPacket oPacket = new OutPacket("GameAiMasterSlotNoticePacket"))
         {
@@ -221,70 +324,94 @@ public static class MultyPlayer
             WriteGameControlBody(oPacket, 1, room.StartTicks);
             BroadCast(room.RoomId, oPacket);
         }
-        room.TimeData = new Dictionary<int, uint>();
-        room.Ranking = new Dictionary<int, int>();
-        room.EndTicks = 0;
-        room.Ready = new ConcurrentDictionary<string, bool>();
-        Console.WriteLine("StartTicks = {0}", room.StartTicks);
+        Console.WriteLine("시작 틱 = {0}", room.StartTicks);
     }
 
-    static void Set_settleTrigger(SessionGroup Parent)
+    private static bool TryBeginSettlement(
+        GameRoom room,
+        out uint endTicks,
+        out long raceGeneration)
+    {
+        lock (room)
+        {
+            if (room.EndTicks != 0 || room.StartTicks == 0 || room.SettlementClosed)
+            {
+                endTicks = 0;
+                raceGeneration = 0;
+                return false;
+            }
+
+            endTicks = ConvertTick() + 10000;
+            room.EndTicks = endTicks;
+            raceGeneration = room.StartHandshakeGeneration;
+            return true;
+        }
+    }
+
+    static void Set_settleTrigger(GameRoom room, long raceGeneration)
     {
         var onceTimer = new System.Timers.Timer();
         onceTimer.Interval = 10000;
-        onceTimer.Elapsed += new System.Timers.ElapsedEventHandler((s, _event) => settleTrigger(Parent, s, _event));
+        onceTimer.Elapsed += new System.Timers.ElapsedEventHandler(
+            (s, _event) => settleTrigger(room, raceGeneration, s, _event));
         onceTimer.AutoReset = false;
         onceTimer.Start();
     }
 
-    static void settleTrigger(SessionGroup Parent, object sender, System.Timers.ElapsedEventArgs e)
+    static void settleTrigger(
+        GameRoom room,
+        long raceGeneration,
+        object sender,
+        System.Timers.ElapsedEventArgs e)
     {
-        var roomId = RoomManager.TryGetRoomId(Parent.Client.Nickname);
-        if (roomId == -1)
+        if (!ReferenceEquals(RoomManager.GetRoom(room.RoomId), room))
         {
             return;
         }
-        var room = RoomManager.GetRoom(roomId);
-        if (room == null)
+
+        uint endTicks;
+        RoomMember[] participantSnapshot;
+        Dictionary<int, uint> timeDataSnapshot;
+        lock (room)
         {
-            return;
+            if (room.StartHandshakeGeneration != raceGeneration ||
+                room.EndTicks == 0 ||
+                room.StartTicks == 0 ||
+                room.SettlementClosed)
+            {
+                return;
+            }
+            endTicks = room.EndTicks;
+            room.SettlementClosed = true;
+            participantSnapshot = room._IDs.ToArray();
+            timeDataSnapshot = new Dictionary<int, uint>(room.TimeData);
         }
 
         using (OutPacket outPacket = new OutPacket("GameControlPacket"))
         {
-            WriteGameControlBody(outPacket, 4, room.EndTicks + 6000);
-            BroadCast(roomId, outPacket);
+            WriteGameControlBody(outPacket, 4, endTicks + 6000);
+            BroadCast(room.RoomId, outPacket);
         }
 
-        InitRoom(room);
-
-        GameResultPacket(room, room._IDs, room.TimeData);
+        GameResultPacket(room, participantSnapshot, timeDataSnapshot);
 
         int firstID = room.Ranking.FirstOrDefault(x => x.Value == 0).Key;
-        if (room.RoomMaster < 8 && RoomManager.TryGetIdDetail(roomId, firstID) is Player p1)
+        if (room.RoomMaster < 8 && RoomManager.TryGetIdDetail(room.RoomId, firstID) is Player p1)
         {
             room.RoomMaster = firstID;
             p1.PlayerType = 2;
         }
-        else if (room.GetOBCount() < 1 && RoomManager.TryGetIdDetail(roomId, firstID) is Player p2)
+        else if (room.GetOBCount() < 1 && RoomManager.TryGetIdDetail(room.RoomId, firstID) is Player p2)
         {
             room.RoomMaster = firstID;
             p2.PlayerType = 2;
         }
-        Console.WriteLine("EndTicks = {0}", room.EndTicks + 6000);
+        InitRoom(room);
+        Console.WriteLine("종료 틱 = {0}", endTicks + 6000);
     }
 
     public static void Clientsession(SessionGroup Parent, uint hash, InPacket iPacket)
     {
-        if (!string.IsNullOrEmpty(Parent.Client.Nickname))
-        {
-            if (!FileName.FileNames.ContainsKey(Parent.Client.Nickname))
-            {
-                FileName.Load(Parent.Client.Nickname);
-            }
-            ProfileService.Load(Parent.Client.Nickname);
-        }
-
         if (hash == Adler32Helper.GenerateAdler32_ASCII("GameSlotPacket", 0))
         {
             SlotData.GameSlotPacket(Parent, iPacket);
@@ -300,7 +427,7 @@ public static class MultyPlayer
             }
             if (iPacket.Available < 5)
             {
-                Console.WriteLine("GameControlPacket: truncated header ({0} bytes)", iPacket.Available);
+                Console.WriteLine("GameControlPacket: 헤더가 잘렸습니다. (남은 데이터 {0}바이트)", iPacket.Available);
                 return;
             }
 
@@ -310,7 +437,7 @@ public static class MultyPlayer
             {
                 if (iPacket.Available < 8)
                 {
-                    Console.WriteLine("GameControlPacket: truncated optional pair");
+                    Console.WriteLine("GameControlPacket: 선택 데이터 쌍이 잘렸습니다.");
                     return;
                 }
                 iPacket.ReadInt();
@@ -319,7 +446,7 @@ public static class MultyPlayer
 
             if (iPacket.Available < 4)
             {
-                Console.WriteLine("GameControlPacket: missing value0 for state {0}", state);
+                Console.WriteLine("GameControlPacket: 상태 {0}의 value0 값이 없습니다.", state);
                 return;
             }
             uint value0 = iPacket.ReadUInt();
@@ -341,18 +468,24 @@ public static class MultyPlayer
                         oPacket.WriteUInt(time);
                         BroadCast(roomId, oPacket);
                     }
-                    room.TimeData.TryAdd(player.ID, time);
-                    Console.WriteLine("GameControlPacket, ID = {0}, Time = {1}", player.ID, time);
+                    lock (room)
+                    {
+                        if (!room.SettlementClosed)
+                            room.TimeData.TryAdd(player.ID, time);
+                    }
+                    Console.WriteLine("GameControlPacket, ID={0}, 시간={1}", player.ID, time);
                 }
-                if (room.EndTicks == 0)
+                if (TryBeginSettlement(
+                    room,
+                    out uint endTicks,
+                    out long raceGeneration))
                 {
-                    room.EndTicks = ConvertTick() + 10000;
                     using (OutPacket oPacket = new OutPacket("GameControlPacket"))
                     {
-                        WriteGameControlBody(oPacket, 3, room.EndTicks);
+                        WriteGameControlBody(oPacket, 3, endTicks);
                         BroadCast(roomId, oPacket, Parent.Client.Nickname);
                     }
-                    Set_settleTrigger(Parent);
+                    Set_settleTrigger(room, raceGeneration);
                 }
             }
             return;
@@ -363,19 +496,46 @@ public static class MultyPlayer
             byte roomListType = iPacket.ReadByte();
             byte roomListMode = iPacket.ReadByte();
             Console.WriteLine(
-                "Room List Request: token={0}, type={1}, mode={2}",
+                "방 목록 요청: 토큰={0}, 유형={1}, 모드={2}, P5136 게임 유형={3}, 채널={4}",
                 page,
                 roomListType,
-                roomListMode);
-            var rooms = RoomManager.GetRoomsByPage(page);
+                roomListMode,
+                Parent.P5136ChannelGameType,
+                Parent.P5136ChannelId);
+            bool isKorean5136RoomList =
+                ClientBuildProfiles.Active.Build == ClientBuild.Korean5136;
+            byte selectedChannelGameType = Parent.P5136ChannelGameType;
+            bool hasExpectedRoomGameType = Korean5136Protocol.TryResolveRoomGameType(
+                selectedChannelGameType,
+                out byte expectedRoomGameType);
+            bool requestMatchesSelectedChannel =
+                !hasExpectedRoomGameType || roomListType == expectedRoomGameType;
+            if (isKorean5136RoomList && !requestMatchesSelectedChannel)
+            {
+                Console.WriteLine(
+                    "방 목록 요청 거부: P5136 채널 게임 유형 {0}은(는) 방 유형 {1}을 요구하지만 {2}을(를) 받았습니다.",
+                    selectedChannelGameType,
+                    expectedRoomGameType,
+                    roomListType);
+            }
+            var rooms = RoomManager.GetRoomsByPage(
+                page,
+                isKorean5136RoomList
+                    ? room => requestMatchesSelectedChannel &&
+                              IsRoomVisibleToSession(Parent, room)
+                    : null,
+                out int visibleRoomCount);
             using (OutPacket oPacket = new OutPacket("ChGetRoomListReplyPacket"))
             {
-                Console.WriteLine($"Room Count: {RoomManager._rooms.Count}");
+                Console.WriteLine(
+                    "현재 채널 방 수: {0} (서버 전체: {1})",
+                    visibleRoomCount,
+                    RoomManager._rooms.Count);
                 // Total room count was inserted before the common page field
                 // and room vector after P5136.
                 if (ClientBuildProfiles.Active.Build != ClientBuild.Korean5136)
                 {
-                    oPacket.WriteInt(RoomManager._rooms.Count); // 房间总数
+                    oPacket.WriteInt(visibleRoomCount); // 房间总数
                 }
                 // The client stores the returned common/page token back into
                 // the same state member used by the request producer.
@@ -424,7 +584,7 @@ public static class MultyPlayer
                     out channel))
                 {
                     Console.WriteLine(
-                        "Channel Switch rejected (P5136 unknown channel group), gameType = {0}, preferred = {1}",
+                        "채널 전환 거부 (P5136에서 알 수 없는 채널 그룹): 게임 유형={0}, 요청 채널={1}",
                         requestedGameType,
                         preferredChannelId);
                     return;
@@ -455,7 +615,7 @@ public static class MultyPlayer
                 StartTimeAttack[Parent.Client.Nickname] =
                     ProfileService.SettingConfig.SpeedType;
                 Console.WriteLine(
-                    "Channel Switch (P5136 catalog), gameType = {0}, preferred = {1}, selected = {2}, speedType = {3}",
+                    "채널 전환 (P5136 목록): 게임 유형={0}, 요청 채널={1}, 선택 채널={2}, 속도 유형={3}",
                     requestedGameType,
                     preferredChannelId,
                     channel,
@@ -468,20 +628,37 @@ public static class MultyPlayer
                     return;
                 }
                 StartTimeAttack[Parent.Client.Nickname] = channelData.CreateSpeed;
-                Console.WriteLine("Channel Switch, channel = {0}", channelData.Name);
+                Console.WriteLine("채널 전환: 채널={0}", channelData.Name);
             }
 
             // 获取服务器IP地址
             IPEndPoint serverIPEndPoint = GetServerEndPoint(Parent);
+            ushort migrationToken = preferredChannelId;
+            if (isKorean5136 && !ClientManager.TryBeginChannelMigration(
+                Parent,
+                channel,
+                requestedGameType,
+                out migrationToken,
+                out string migrationRejection))
+            {
+                PacketTrace.LogEvent(
+                    "LOGIN-TCP",
+                    "MIGRATION-REJECT",
+                    Parent.Client.GetLocalEndPoint(),
+                    Parent.Client.GetRemoteEndPoint(),
+                    Parent.Client.Nickname,
+                    migrationRejection);
+                return;
+            }
 
             using (OutPacket oPacket = new OutPacket("PrChannelSwitch"))
             {
                 oPacket.WriteInt(0);
                 oPacket.WriteUShort(channel);
-                // P5136 reply +0x16 is an opaque migration token, not the
-                // request's preferred concrete record. The stock catalog flow
-                // uses zero and copies it into PqChannelMovein.
-                oPacket.WriteUShort(isKorean5136 ? (ushort)0 : preferredChannelId);
+                // P5136 copies this opaque token into PqChannelMovein. A
+                // per-request value separates an authorized migration from a
+                // second connection that only knows the same user number.
+                oPacket.WriteUShort(migrationToken);
                 oPacket.WriteEndPoint(serverIPEndPoint);
                 Parent.Client.Send(oPacket);
             }
@@ -489,22 +666,31 @@ public static class MultyPlayer
         }
         else if (hash == Adler32Helper.GenerateAdler32_ASCII("PqChannelMovein", 0))
         {
-            uint UserNO = iPacket.ReadUInt();
-            string nickname = ClientManager.GetNickname(UserNO);
-            if (string.IsNullOrEmpty(nickname)) return;
-            Console.WriteLine("PqChannelMovein nickname = {0}", nickname);
-            IPEndPoint clientEndPoint = Parent.Client.Socket.RemoteEndPoint as IPEndPoint;
-            if (clientEndPoint == null) return;
-            string clientId = ClientManager.GetClientId(clientEndPoint);
+            uint userNo = iPacket.ReadUInt();
+            ushort channelId = iPacket.ReadUShort();
+            ushort migrationToken = iPacket.ReadUShort();
+            if (!ClientManager.TryCompleteChannelMigration(
+                Parent,
+                userNo,
+                channelId,
+                migrationToken,
+                out string nickname,
+                out string migrationRejection))
+            {
+                PacketTrace.LogEvent(
+                    "LOGIN-TCP",
+                    "MIGRATION-REJECT",
+                    Parent.Client.GetLocalEndPoint(),
+                    Parent.Client.GetRemoteEndPoint(),
+                    "",
+                    migrationRejection);
+                Console.WriteLine($"PqChannelMovein 거부: {migrationRejection}");
+                Parent.Client.Disconnect();
+                return;
+            }
+            Console.WriteLine("PqChannelMovein: 닉네임={0}", nickname);
             if (!string.IsNullOrEmpty(nickname))
             {
-                if (string.IsNullOrEmpty(Parent.Client.Nickname))
-                {
-                    Parent.Client.Nickname = nickname;
-                }
-                var nicknameConfig = ProfileService.GetProfileConfig(nickname);
-                nicknameConfig.Rider.ClientId = clientId;
-                ProfileService.Save(nickname, nicknameConfig);
                 using (OutPacket oPacket = new OutPacket("PrChannelMoveIn"))
                 {
                     oPacket.WriteByte(1);
@@ -519,16 +705,16 @@ public static class MultyPlayer
         else if (hash == Adler32Helper.GenerateAdler32_ASCII("ChCreateRoomRequestPacket", 0))
         {
             Console.WriteLine(
-                "ChCreateRoomRequestPacket RX: bodyBytes={0}",
+                "ChCreateRoomRequestPacket 수신: 본문 크기={0}바이트",
                 iPacket.Available);
             string RoomName = iPacket.ReadString();    //room name
-            Console.WriteLine("RoomName = {0}, len = {1}", RoomName, RoomName.Length);
+            Console.WriteLine("방 이름={0}, 길이={1}", RoomName, RoomName.Length);
             string Password = iPacket.ReadString();
-            Console.WriteLine("Room password present = {0}", Password.Length > 0);
+            Console.WriteLine("방 비밀번호 있음={0}", Password.Length > 0);
             byte GameType = iPacket.ReadEncodedByte(); //7c
             iPacket.ReadInt(); // +0x1C
             var AiCount = iPacket.ReadInt();
-            Console.WriteLine("AiCount = {0}", AiCount);
+            Console.WriteLine("AI 수={0}", AiCount);
             if (ClientBuildProfiles.Active.Build != ClientBuild.Korean5136)
             {
                 // Added after P5136. All following ChCreateRoomRequestPacket
@@ -544,13 +730,53 @@ public static class MultyPlayer
             iPacket.ReadByte(); // +0x6D
             iPacket.ReadInt(); // +0x70
             iPacket.ReadByte(); // +0x74
-            Console.WriteLine("AiSwitch = {0}", AiSwitch);
+            Console.WriteLine("AI 사용={0}", AiSwitch);
+
+            if (ClientBuildProfiles.Active.Build == ClientBuild.Korean5136 &&
+                Parent.P5136ChannelGameType == 0)
+            {
+                Console.WriteLine(
+                    "방 생성 거부: 현재 P5136 채널 상태가 없습니다. (세대={0}, 채널={1})",
+                    Parent.IdentityGeneration,
+                    Parent.P5136ChannelId);
+                using (OutPacket oPacket = new OutPacket("ChCreateRoomReplyPacket"))
+                {
+                    oPacket.WriteByte(0);
+                    oPacket.WriteByte(0);
+                    oPacket.WriteByte(0);
+                    oPacket.WriteEncByte(GameType);
+                    Parent.Client.Send(oPacket);
+                }
+                return;
+            }
+
+            if (ClientBuildProfiles.Active.Build == ClientBuild.Korean5136 &&
+                Korean5136Protocol.TryResolveRoomGameType(
+                    Parent.P5136ChannelGameType,
+                    out byte expectedCreateGameType) &&
+                GameType != expectedCreateGameType)
+            {
+                Console.WriteLine(
+                    "방 생성 거부: P5136 채널 게임 유형 {0}은(는) 방 유형 {1}을 요구하지만 {2}을(를) 받았습니다.",
+                    Parent.P5136ChannelGameType,
+                    expectedCreateGameType,
+                    GameType);
+                using (OutPacket oPacket = new OutPacket("ChCreateRoomReplyPacket"))
+                {
+                    oPacket.WriteByte(0);
+                    oPacket.WriteByte(0);
+                    oPacket.WriteByte(0);
+                    oPacket.WriteEncByte(GameType);
+                    Parent.Client.Send(oPacket);
+                }
+                return;
+            }
 
             var udpRoute = UdpServer.GetUdp(Parent.Client.Nickname);
             if (udpRoute.Item2 == 0)
             {
                 Console.WriteLine(
-                    "CreateRoom rejected: no registered UDP route for {0} (endpoint={1})",
+                    "방 생성 거부: {0}의 등록된 UDP 경로가 없습니다. (주소={1})",
                     Parent.Client.Nickname,
                     udpRoute.Item1);
                 using (OutPacket oPacket = new OutPacket("ChCreateRoomReplyPacket"))
@@ -581,9 +807,11 @@ public static class MultyPlayer
                 Room.SpeedType = 7;
             }
             Room.GameType = GameType;
+            Room.P5136ChannelGameType = Parent.P5136ChannelGameType;
+            Room.P5136ChannelId = Parent.P5136ChannelId;
             Room.RoomDataHeader = RoomDataHeader;
             Room.RoomData = RoomData;
-            Console.WriteLine("CreateRoom = {0}", RoomId);
+            Console.WriteLine("방 생성 완료: 방 번호={0}", RoomId);
             byte randomTrackGameType = 0;
             if (GameType == 2 || GameType == 4 || GameType == 14 || GameType == 54)
             {
@@ -596,13 +824,13 @@ public static class MultyPlayer
                 byte slot = RoomManager.AddPlayer(RoomId, Parent.Client.Nickname, 2, 2, Parent);
                 if (slot == 255)
                 {
-                    Console.WriteLine("CreateRoom Failed");
+                    Console.WriteLine("방 생성 실패");
                     return;
                 }
                 Player player = RoomManager.GetPlayer(RoomId, Parent.Client.Nickname);
                 if (player == null)
                 {
-                    Console.WriteLine("GetPlayer Failed");
+                    Console.WriteLine("플레이어 조회 실패");
                     return;
                 }
                 Room.RoomMaster = player.ID;
@@ -625,13 +853,13 @@ public static class MultyPlayer
                 byte slot = RoomManager.AddPlayer(RoomId, Parent.Client.Nickname, 0, 2, Parent);
                 if (slot == 255)
                 {
-                    Console.WriteLine("CreateRoom Failed");
+                    Console.WriteLine("방 생성 실패");
                     return;
                 }
                 Player player = RoomManager.GetPlayer(RoomId, Parent.Client.Nickname);
                 if (player == null)
                 {
-                    Console.WriteLine("GetPlayer Failed");
+                    Console.WriteLine("플레이어 조회 실패");
                     return;
                 }
                 Room.RoomMaster = player.ID;
@@ -679,7 +907,7 @@ public static class MultyPlayer
             if (iPacket.Available < 40)
             {
                 Console.WriteLine(
-                    "GrChangeTrackPacket: truncated body ({0} bytes, expected 40)",
+                    "GrChangeTrackPacket: 본문이 잘렸습니다. ({0}바이트, 예상 40바이트)",
                     iPacket.Available);
                 return;
             }
@@ -688,7 +916,7 @@ public static class MultyPlayer
             room.RoomDataHeader = iPacket.ReadUInt();
             room.RoomData = iPacket.ReadBytes(32);
             Console.WriteLine(
-                "Gr Track Changed: track=0x{0:X8}, name={1}, metadataHeader=0x{2:X8}",
+                "Gr 트랙 변경: 트랙=0x{0:X8}, 이름={1}, 메타데이터 헤더=0x{2:X8}",
                 room.track,
                 RandomTrack.GetTrackName(room.track),
                 room.RoomDataHeader);
@@ -707,7 +935,7 @@ public static class MultyPlayer
             var player = RoomManager.GetPlayer(roomId, Parent.Client.Nickname);
             if (player == null)
             {
-                Console.WriteLine("GetPlayer Failed, roomId = {0}, Parent.Client.Nickname = {1}", roomId, Parent.Client.Nickname);
+                Console.WriteLine("플레이어 조회 실패: 방 번호={0}, 닉네임={1}", roomId, Parent.Client.Nickname);
                 return;
             }
 
@@ -914,7 +1142,7 @@ public static class MultyPlayer
             int slotId = RoomManager.GetPlayerSlotId(roomId, Parent.Client.Nickname);
             if (slotId != -1)
             {
-                Console.WriteLine($"Leave roomId: {roomId} slotId: {slotId}");
+                Console.WriteLine($"방 나가기: 방 번호={roomId}, 슬롯 번호={slotId}");
                 var Leave = RoomManager.RemovePlayer(roomId, (byte)slotId, Parent.Client.Nickname);
                 using (OutPacket oPacket = new OutPacket("ChLeaveRoomReplyPacket"))
                 {
@@ -924,7 +1152,7 @@ public static class MultyPlayer
             }
             else
             {
-                Console.WriteLine($"Leave Failed roomId: {roomId} slotId: {slotId}");
+                Console.WriteLine($"방 나가기 실패: 방 번호={roomId}, 슬롯 번호={slotId}");
                 using (OutPacket oPacket = new OutPacket("ChLeaveRoomReplyPacket"))
                 {
                     oPacket.WriteBool(false);
@@ -983,17 +1211,23 @@ public static class MultyPlayer
                 oPacket.WriteUInt(Time);
                 BroadCast(roomId, oPacket);
             }
-            room.TimeData.TryAdd(Id, Time);
-            Console.WriteLine("GameAiGoalinPacket, Id = {0}, Time = {1}", Id, Time);
-            if (room.EndTicks == 0)
+            lock (room)
             {
-                room.EndTicks = ConvertTick() + 10000;
+                if (!room.SettlementClosed)
+                    room.TimeData.TryAdd(Id, Time);
+            }
+            Console.WriteLine("GameAiGoalinPacket: ID={0}, 시간={1}", Id, Time);
+            if (TryBeginSettlement(
+                room,
+                out uint endTicks,
+                out long raceGeneration))
+            {
                 using (OutPacket oPacket = new OutPacket("GameControlPacket"))
                 {
-                    WriteGameControlBody(oPacket, 3, room.EndTicks);
+                    WriteGameControlBody(oPacket, 3, endTicks);
                     BroadCast(roomId, oPacket);
                 }
-                Set_settleTrigger(Parent);
+                Set_settleTrigger(room, raceGeneration);
             }
             return;
         }
@@ -1007,7 +1241,7 @@ public static class MultyPlayer
             }
             var team = iPacket.ReadByte();
             var value = iPacket.ReadFloat();
-            Console.WriteLine("GameTeamBoosterRequestAddGaugePacket, teams = {0}, value = {1}", team, value);
+            Console.WriteLine("GameTeamBoosterRequestAddGaugePacket: 팀={0}, 값={1}", team, value);
 
             if (team == 1)
             {
@@ -1046,12 +1280,12 @@ public static class MultyPlayer
             var player = RoomManager.GetPlayer(roomId, Parent.Client.Nickname);
             if (player == null)
             {
-                Console.WriteLine("GetPlayer Failed, roomId = {0}, Parent.Client.Nickname = {1}", roomId, Parent.Client.Nickname);
+                Console.WriteLine("플레이어 조회 실패: 방 번호={0}, 닉네임={1}", roomId, Parent.Client.Nickname);
                 return;
             }
             byte team = iPacket.ReadByte();
             var Bool = RoomManager.ChangeMemberTeam(roomId, player.SlotId, team);
-            Console.WriteLine("ChangeMemberTeam, roomId = {0}, SlotId = {1}, Team = {2}, {3}", roomId, player.SlotId, team, Bool);
+            Console.WriteLine("팀 변경: 방 번호={0}, 슬롯 번호={1}, 팀={2}, 결과={3}", roomId, player.SlotId, team, Bool);
             using (OutPacket oPacket = new OutPacket("GrChangeTeamPacketReply"))
             {
                 oPacket.WriteInt(player.ID);
@@ -1072,12 +1306,12 @@ public static class MultyPlayer
             if (iPacket.Available < 28)
             {
                 Console.WriteLine(
-                    "ChJoinRoomRequestPacket: truncated context ({0}/28 bytes)",
+                    "ChJoinRoomRequestPacket: 내용이 잘렸습니다. ({0}/28바이트)",
                     iPacket.Available);
                 return;
             }
             iPacket.ReadBytes(28);
-            Console.WriteLine("ChJoinRoomRequestPacket, roomId = {0}, unk = {1}, pwd = {2}", roomId, unk, pwd);
+            Console.WriteLine("ChJoinRoomRequestPacket: 방 번호={0}, 미확인 값={1}, 비밀번호={2}", roomId, unk, pwd);
 
             ChJoinRoomReplyPacket(Parent, roomId, pwd);
             return;
@@ -1094,14 +1328,14 @@ public static class MultyPlayer
             var room = RoomManager.GetRoom(roomId);
             if (room == null)
             {
-                Console.WriteLine("GetRoom Failed, roomId = {0}", roomId);
+                Console.WriteLine("방 조회 실패: 방 번호={0}", roomId);
                 return;
             }
 
             var player = RoomManager.GetPlayer(roomId, Parent.Client.Nickname);
             if (player == null)
             {
-                Console.WriteLine("GetPlayer Failed, roomId = {0}, Parent.Client.Nickname = {1}", roomId, Parent.Client.Nickname);
+                Console.WriteLine("플레이어 조회 실패: 방 번호={0}, 닉네임={1}", roomId, Parent.Client.Nickname);
                 return;
             }
 
@@ -1140,7 +1374,7 @@ public static class MultyPlayer
             var room = RoomManager.GetRoom(roomId);
             if (room == null)
             {
-                Console.WriteLine("GetRoom Failed, roomId = {0}", roomId);
+                Console.WriteLine("방 조회 실패: 방 번호={0}", roomId);
                 return;
             }
             string Target = iPacket.ReadString();
@@ -1157,12 +1391,14 @@ public static class MultyPlayer
         {
             // Cancellation has an empty body and must not execute the random
             // room-join path used by PcStartMatching.
-            Console.WriteLine("PcCancelMatching: matchmaking cancelled");
+            Console.WriteLine("PcCancelMatching: 매칭이 취소되었습니다.");
             return;
         }
         else if (hash == Adler32Helper.GenerateAdler32_ASCII("PcStartMatching"))
         {
-            var roomList = RoomManager._rooms.Values.Where(r => !r.Lock).ToList();
+            var roomList = RoomManager._rooms.Values
+                .Where(room => !room.Lock && IsRoomVisibleToSession(Parent, room))
+                .ToList();
             if (roomList.Count > 0)
             {
                 Random random = new Random();
@@ -1222,13 +1458,13 @@ public static class MultyPlayer
             int roomId = RoomManager.TryGetRoomId(Parent.Client.Nickname);
             if (roomId == -1)
             {
-                Console.WriteLine("TryGetRoomId Failed, Parent.Client.Nickname = {0}", Parent.Client.Nickname);
+                Console.WriteLine("방 번호 조회 실패: 닉네임={0}", Parent.Client.Nickname);
                 return;
             }
             var room = RoomManager.GetRoom(roomId);
             if (room == null)
             {
-                Console.WriteLine("GetRoom Failed, roomId = {0}", roomId);
+                Console.WriteLine("방 조회 실패: 방 번호={0}", roomId);
                 return;
             }
             room.RoomName = RoomName;
@@ -1262,7 +1498,7 @@ public static class MultyPlayer
             int roomId = RoomManager.TryGetRoomId(Parent.Client.Nickname);
             if (roomId == -1)
             {
-                Console.WriteLine("TryGetRoomId Failed, Parent.Client.Nickname = {0}", Parent.Client.Nickname);
+                Console.WriteLine("방 번호 조회 실패: 닉네임={0}", Parent.Client.Nickname);
                 return;
             }
             int ID = iPacket.ReadInt();
@@ -1499,10 +1735,15 @@ public static class MultyPlayer
                 p.LastPacketReceived = 0;
             }
         }
-        room.Started = false;
-        room.StartTicks = 0;
-        room.StartHandshakePending = false;
-        room.Ready.Clear();
+        lock (room)
+        {
+            room.Started = false;
+            room.StartTicks = 0;
+            room.StartHandshakePending = false;
+            room.StartHandshakeGeneration++;
+            room.SettlementClosed = true;
+            room.Ready.Clear();
+        }
     }
 
     static void GrSlotDataPacket(int roomId, OutPacket outPacket, bool enter = false, string nickname = "")
@@ -1528,7 +1769,7 @@ public static class MultyPlayer
             {
                 var pConfig = ProfileService.GetProfileConfig(p.Nickname);
 
-                Console.WriteLine("Player Nickname = {0}, ID = {1}, SlotId = {2}", p.Nickname, p.ID, p.SlotId);
+                Console.WriteLine("플레이어: 닉네임={0}, ID={1}, 슬롯 번호={2}", p.Nickname, p.ID, p.SlotId);
                 if (enter)
                 {
                     if (p.ID == room.RoomMaster && p.PlayerType == 2)
@@ -1614,7 +1855,7 @@ public static class MultyPlayer
             }
             else if (member is Ai a)
             {
-                Console.WriteLine("Ai ID = {0}, SlotId = {1}", a.ID, a.SlotId);
+                Console.WriteLine("AI: ID={0}, 슬롯 번호={1}", a.ID, a.SlotId);
                 outPacket.WriteInt(7);
                 outPacket.WriteShort(a.Character);
                 outPacket.WriteShort(a.Rid);
@@ -1774,7 +2015,7 @@ public static class MultyPlayer
             oPacket.WriteUInt(Adler32Helper.GenerateAdler32(Encoding.ASCII.GetBytes("MissionInfo")));
             oPacket.WriteHexString("00 00 00 00 00 00 00 00 00 00 FF FF FF FF 00 00 00 00 00 00 00 00 00");
             //oPacket.WriteString("[applied param]\r\ntransAccelFactor='1.8555' driftEscapeForce='4720' steerConstraint='24.95' normalBoosterTime='3860' \r\npartsBoosterLock='1' \r\n\r\n[equipped / default parts param]\r\ntransAccelFactor='1.86' driftEscapeForce='2120' steerConstraint='2.7' normalBoosterTime='860' \r\n\r\n\r\n[gamespeed param]\r\ntransAccelFactor='-0.0045' driftEscapeForce='2600' steerConstraint='22.25' normalBoosterTime='3000' \r\n\r\n\r\n[factory enchant param]\r\n");
-            Console.WriteLine("Track : {0}", RandomTrack.GetTrackName(room.trackTemp));
+            Console.WriteLine("트랙: {0}", RandomTrack.GetTrackName(room.trackTemp));
             p.Session.Client.Send(oPacket);
         }
     }
@@ -1794,7 +2035,7 @@ public static class MultyPlayer
         var room = RoomManager.GetRoom(roomId);
         if (room == null)
         {
-            Console.WriteLine("GetRoom Failed, roomId = {0}", roomId);
+            Console.WriteLine("방 조회 실패: 방 번호={0}", roomId);
             return;
         }
         outPacket.WriteString(room.RoomName);
@@ -1822,7 +2063,7 @@ public static class MultyPlayer
     {
         // 1-无法进入房间；2-房间已满；3-密码错误；4-匹配失败；5-创建新房间
         var room = RoomManager.GetRoom(roomId);
-        if (room == null || room.Started)
+        if (room == null || room.Started || !IsRoomVisibleToSession(Parent, room))
         {
             byte gameType = room?.GameType ?? 0;
             using (OutPacket outPacket = new OutPacket("ChJoinRoomReplyPacket"))
@@ -1934,6 +2175,31 @@ public static class MultyPlayer
         }
     }
 
+    private static bool IsRoomVisibleToSession(SessionGroup parent, GameRoom room)
+    {
+        if (room == null)
+        {
+            return false;
+        }
+
+        if (ClientBuildProfiles.Active.Build != ClientBuild.Korean5136)
+        {
+            return true;
+        }
+
+        byte selectedChannelGameType = parent?.P5136ChannelGameType ?? 0;
+        if (selectedChannelGameType == 0 ||
+            room.P5136ChannelGameType != selectedChannelGameType)
+        {
+            return false;
+        }
+
+        return !Korean5136Protocol.TryResolveRoomGameType(
+                   selectedChannelGameType,
+                   out byte expectedRoomGameType) ||
+               room.GameType == expectedRoomGameType;
+    }
+
     public static void BroadCast(int roomId, OutPacket outPacket, string Self = "", byte team = 0)
     {
         var room = RoomManager.GetRoom(roomId);
@@ -2031,7 +2297,7 @@ public static class MultyPlayer
         var room = RoomManager.GetRoom(roomId);
         if (room == null)
         {
-            Console.WriteLine("GetRoom Failed, roomId = {0}", roomId);
+            Console.WriteLine("방 조회 실패: 방 번호={0}", roomId);
         }
         var selector = new DictionaryRandomSelector();
         List<short> randomCharIds = selector.GetRandomCharacterIds(aiCharacterDict, 2);
@@ -2244,7 +2510,7 @@ public static class MultyPlayer
         {
             firstTeam = a2.Team;
         }
-        Console.WriteLine("第一名 ID: {0} Team: {1}", firstId, firstTeam);
+        Console.WriteLine("1위 ID={0}, 팀={1}", firstId, firstTeam);
 
         int redTeam = 0;
         int blueTeam = 0;
@@ -2317,7 +2583,7 @@ public static class MultyPlayer
                     outPacket.WriteUShort(p4Config.RiderItem.Set_Kart);
                     int playerRanking = ranking[p4.ID];
                     int playerPoint = timeData[p4.ID] == uint.MaxValue ? 0 : teamPoints[playerRanking];
-                    Console.WriteLine("Player {0} 排名 {1} 得分 {2}", p4.ID, playerRanking, playerPoint);
+                    Console.WriteLine("플레이어 {0}: 순위={1}, 점수={2}", p4.ID, playerRanking, playerPoint);
                     outPacket.WriteInt(playerRanking);
                     if (room.GameType == 3 || room.GameType == 4)
                     {
@@ -2374,7 +2640,7 @@ public static class MultyPlayer
                     outPacket.WriteShort(a4.Kart);
                     int AiRanking = ranking[a4.ID];
                     int AiPoint = timeData[a4.ID] == uint.MaxValue ? 0 : teamPoints[AiRanking];
-                    Console.WriteLine("AI {0} 排名 {1} 得分 {2}", a4.ID, AiRanking, AiPoint);
+                    Console.WriteLine("AI {0}: 순위={1}, 점수={2}", a4.ID, AiRanking, AiPoint);
                     outPacket.WriteInt(AiRanking);
                     outPacket.WriteShort(0);
                     if (room.GameType == 3 || room.GameType == 4)
@@ -2389,7 +2655,7 @@ public static class MultyPlayer
                     }
                 }
             }
-            Console.WriteLine("红队得分 {0} 蓝队得分 {1}", redTeam, blueTeam);
+            Console.WriteLine("레드 팀 점수={0}, 블루 팀 점수={1}", redTeam, blueTeam);
             outPacket.WriteBytes(new byte[34]);
             WriteGameResultTail(outPacket);
             BroadCast(room.RoomId, outPacket);

@@ -2,6 +2,7 @@ using KartRider;
 using RiderData;
 using System;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -10,20 +11,26 @@ namespace Profile
 {
     public class ProfileService
     {
+        private static readonly ConcurrentDictionary<string, object> ProfileLocks =
+            new ConcurrentDictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+
         public static Setting SettingConfig { get; set; } = new Setting();
 
         public static ProfileConfig GetProfileConfig(string Nickname)
         {
-            if (!FileName.FileNames.ContainsKey(Nickname))
+            lock (GetProfileLock(Nickname))
             {
-                FileName.Load(Nickname);
+                if (!FileName.FileNames.ContainsKey(Nickname))
+                {
+                    FileName.Load(Nickname);
+                }
+                var filename = FileName.FileNames[Nickname];
+                if (File.Exists(filename.config_path))
+                {
+                    return JsonHelper.DeserializeNoBom<ProfileConfig>(filename.config_path) ?? new ProfileConfig();
+                }
+                return new ProfileConfig();
             }
-            var filename = FileName.FileNames[Nickname];
-            if (File.Exists(filename.config_path))
-            {
-                return JsonHelper.DeserializeNoBom<ProfileConfig>(filename.config_path) ?? new ProfileConfig();
-            }
-            return new ProfileConfig();
         }
 
         public static void SaveSettings()
@@ -51,28 +58,68 @@ namespace Profile
 
         public static void Save(string Nickname, ProfileConfig config)
         {
-            if (!FileName.FileNames.ContainsKey(Nickname))
+            lock (GetProfileLock(Nickname))
             {
-                FileName.Load(Nickname);
+                if (!FileName.FileNames.ContainsKey(Nickname))
+                {
+                    FileName.Load(Nickname);
+                }
+                var filename = FileName.FileNames[Nickname];
+                Directory.CreateDirectory(Path.GetDirectoryName(filename.config_path)!);
+                string temporaryPath = filename.config_path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+                try
+                {
+                    File.WriteAllText(temporaryPath, JsonHelper.Serialize(config), new UTF8Encoding(false));
+                    File.Move(temporaryPath, filename.config_path, true);
+                }
+                finally
+                {
+                    if (File.Exists(temporaryPath))
+                        File.Delete(temporaryPath);
+                }
             }
-            var filename = FileName.FileNames[Nickname];
-            File.WriteAllText(filename.config_path, JsonHelper.Serialize(config));
         }
 
         public static void Load(string Nickname)
         {
-            if (!FileName.FileNames.ContainsKey(Nickname))
+            lock (GetProfileLock(Nickname))
             {
-                FileName.Load(Nickname);
-            }
-            var filename = FileName.FileNames[Nickname];
+                if (!FileName.FileNames.ContainsKey(Nickname))
+                {
+                    FileName.Load(Nickname);
+                }
+                var filename = FileName.FileNames[Nickname];
 
-            if (!File.Exists(filename.config_path))
-            {
-                ProfileConfig newConfig = new ProfileConfig();
-                Save(Nickname, newConfig);
+                if (!File.Exists(filename.config_path))
+                {
+                    ProfileConfig newConfig = new ProfileConfig();
+                    Save(Nickname, newConfig);
+                }
+                Loaded(Nickname);
             }
-            Loaded(Nickname);
+        }
+
+        public static ProfileConfig Update(
+            string nickname,
+            Action<ProfileConfig> update)
+        {
+            if (update == null)
+                throw new ArgumentNullException(nameof(update));
+
+            lock (GetProfileLock(nickname))
+            {
+                ProfileConfig config = GetProfileConfig(nickname);
+                update(config);
+                Save(nickname, config);
+                return config;
+            }
+        }
+
+        private static object GetProfileLock(string nickname)
+        {
+            if (string.IsNullOrWhiteSpace(nickname))
+                throw new ArgumentException("A profile nickname is required.", nameof(nickname));
+            return ProfileLocks.GetOrAdd(nickname, _ => new object());
         }
 
         private static void Loaded(string Nickname)

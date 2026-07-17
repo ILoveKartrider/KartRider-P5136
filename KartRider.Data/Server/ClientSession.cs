@@ -34,7 +34,7 @@ namespace KartRider
 
         public override void OnDisconnect()
         {
-            ClientManager.RemoveClient(this.Socket);
+            ClientManager.RemoveClient(this.Parent);
         }
 
         public override void OnPacket(InPacket iPacket)
@@ -44,11 +44,47 @@ namespace KartRider
             {
                 iPacket.Position = 0;
                 uint hash = iPacket.ReadUInt();
+                bool korean5136 =
+                    ClientBuildProfiles.Active.Build == ClientBuild.Korean5136;
+                bool identityPacket = korean5136 &&
+                    Korean5136Protocol.IsIdentityEstablishingPacket(hash);
+                bool identityEstablishing = identityPacket &&
+                    this.Parent.IdentityGeneration == 0 &&
+                    string.IsNullOrEmpty(this.Parent.Client.Nickname);
+                using IDisposable identityOperation = korean5136 && !identityEstablishing
+                    ? ClientManager.TryAcquireIdentityOperation(this.Parent)
+                    : null;
 
-                if (ClientBuildProfiles.Active.Build == ClientBuild.Korean5136 &&
-                    Korean5136Protocol.TryHandle(this.Parent, hash, iPacket))
+                if (korean5136)
                 {
-                    return;
+                    if (identityPacket && !identityEstablishing)
+                    {
+                        PacketTrace.LogEvent(
+                            "TCP",
+                            "IDENTITY-REPLAY-DROP",
+                            this.GetLocalEndPoint(),
+                            this.GetRemoteEndPoint(),
+                            this.Nickname,
+                            $"hash=0x{hash:X8}; identity handshake replay on an owned session");
+                        this.Disconnect();
+                        return;
+                    }
+
+                    if (!identityEstablishing && identityOperation == null)
+                    {
+                        PacketTrace.LogEvent(
+                            "TCP",
+                            "STALE-SESSION-DROP",
+                            this.GetLocalEndPoint(),
+                            this.GetRemoteEndPoint(),
+                            this.Nickname,
+                            $"hash=0x{hash:X8}; session is not the current identity owner");
+                        this.Disconnect();
+                        return;
+                    }
+
+                    if (Korean5136Protocol.TryHandle(this.Parent, hash, iPacket))
+                        return;
                 }
 
                 if (PacketDispatcher.Dispatch(typeof(MsgrServer), (PacketName)hash, iPacket, iPacket.ToArray(), this.Parent, null))
@@ -235,7 +271,7 @@ namespace KartRider
                                 this.Parent.Client.Nickname = newNickname;
 
                                 // 2. 更新 FileName.FileNames 的 key
-                                FileName.FileNames.Remove(oldNickname);
+                                FileName.FileNames.TryRemove(oldNickname, out _);
                                 FileName.Load(newNickname);
 
                                 // 3. 更新 ClientManager.NicknameToUserNO
@@ -3870,18 +3906,18 @@ namespace KartRider
                     else if (hash == Adler32Helper.GenerateAdler32_ASCII("ChClientP2pAddrPacket", 0))
                     {
                         var ClientP2pAddr = iPacket.ReadEndPoint();
-                        var p2pConfig = ProfileService.GetProfileConfig(this.Parent.Client.Nickname);
-                        p2pConfig.Rider.P2pPort = (ushort)ClientP2pAddr.Port;
-                        ProfileService.Save(this.Parent.Client.Nickname, p2pConfig);
+                        ProfileService.Update(
+                            this.Parent.Client.Nickname,
+                            config => config.Rider.P2pPort = (ushort)ClientP2pAddr.Port);
                         Console.WriteLine($"[{this.Parent.Client.Nickname}] {ClientP2pAddr.Address}:{ClientP2pAddr.Port}");
                         return;
                     }
                     else if (hash == Adler32Helper.GenerateAdler32_ASCII("ChClientUdpAddrPacket", 0))
                     {
                         var ClientUdpAddr = iPacket.ReadEndPoint();
-                        var udpConfig = ProfileService.GetProfileConfig(this.Parent.Client.Nickname);
-                        udpConfig.Rider.UdpPort = (ushort)ClientUdpAddr.Port;
-                        ProfileService.Save(this.Parent.Client.Nickname, udpConfig);
+                        ProfileService.Update(
+                            this.Parent.Client.Nickname,
+                            config => config.Rider.UdpPort = (ushort)ClientUdpAddr.Port);
                         Console.WriteLine($"[{this.Parent.Client.Nickname}] {ClientUdpAddr.Address}:{ClientUdpAddr.Port}");
                         return;
                     }

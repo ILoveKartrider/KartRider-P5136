@@ -23,11 +23,12 @@ namespace KartRider
             Speed_label = new Label();
             AiSpeed_label = new Label();
             PhysicsNote_label = new Label();
+            RoomNameKeyword_label = new Label();
             SuspendLayout();
 
             Name_label.AutoSize = true;
             Name_label.Location = new Point(20, 24);
-            Name_label.Text = "기본 계정";
+            Name_label.Text = "기본 계정 이름";
             PlayerName.Location = new Point(135, 20);
             PlayerName.Size = new Size(205, 23);
 
@@ -54,15 +55,20 @@ namespace KartRider
 
             SoloRank.AutoSize = true;
             SoloRank.Location = new Point(135, 172);
-            SoloRank.Text = "솔로 랭킹 사용";
+            SoloRank.Text = "개인전 순위 기록";
             EnableMod.AutoSize = true;
             EnableMod.Location = new Point(255, 172);
-            EnableMod.Text = "MOD 사용";
+            EnableMod.Text = "모드 사용";
 
             PhysicsNote_label.AutoSize = true;
             PhysicsNote_label.ForeColor = Color.DimGray;
             PhysicsNote_label.Location = new Point(20, 207);
-            PhysicsNote_label.MaximumSize = new Size(340, 0);
+            PhysicsNote_label.MaximumSize = new Size(440, 0);
+
+            RoomNameKeyword_label.AutoSize = true;
+            RoomNameKeyword_label.ForeColor = Color.FromArgb(55, 65, 81);
+            RoomNameKeyword_label.Location = new Point(20, 238);
+            RoomNameKeyword_label.MaximumSize = new Size(440, 0);
 
             // Retained only so old Profile/Settings.json values can round-trip.
             // Network controls moved to the P236-style server launcher.
@@ -73,7 +79,7 @@ namespace KartRider
 
             AutoScaleDimensions = new SizeF(7F, 15F);
             AutoScaleMode = AutoScaleMode.Font;
-            ClientSize = new Size(380, 270);
+            ClientSize = new Size(480, 335);
             Controls.Add(PlayerName);
             Controls.Add(Name_label);
             Controls.Add(Version_comboBox);
@@ -85,6 +91,7 @@ namespace KartRider
             Controls.Add(SoloRank);
             Controls.Add(EnableMod);
             Controls.Add(PhysicsNote_label);
+            Controls.Add(RoomNameKeyword_label);
             Font = new Font("맑은 고딕", 9F, FontStyle.Regular, GraphicsUnit.Point, 129);
             FormBorderStyle = FormBorderStyle.FixedDialog;
             Icon = Icon.ExtractAssociatedIcon(Process.GetCurrentProcess().MainModule.FileName);
@@ -114,5 +121,6 @@ namespace KartRider
         private Label Version_label;
         private Label AiSpeed_label;
         private Label PhysicsNote_label;
+        private Label RoomNameKeyword_label;
     }
 }

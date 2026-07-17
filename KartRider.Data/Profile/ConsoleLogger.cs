@@ -6,6 +6,9 @@ namespace LoggerLibrary
 {
     public sealed class CachedConsoleWriter : TextWriter
     {
+        private const int MaximumCacheCharacters = 1_000_000;
+        private const int RetainedCacheCharacters = 500_000;
+
         public static CachedConsoleWriter cachedWriter;
 
         private readonly TextWriter originalOut;
@@ -44,6 +47,7 @@ namespace LoggerLibrary
             {
                 originalOut.Write(value);
                 cache.Append(value);
+                TrimCacheIfNeeded();
             }
         }
 
@@ -53,6 +57,7 @@ namespace LoggerLibrary
             {
                 originalOut.Write(value);
                 cache.Append(value);
+                TrimCacheIfNeeded();
             }
         }
 
@@ -62,6 +67,7 @@ namespace LoggerLibrary
             {
                 originalOut.WriteLine(value);
                 cache.AppendLine(value);
+                TrimCacheIfNeeded();
             }
         }
 
@@ -90,6 +96,14 @@ namespace LoggerLibrary
             {
                 Console.WriteLine($"콘솔 로그 저장 실패: {exception.Message}");
             }
+        }
+
+        private void TrimCacheIfNeeded()
+        {
+            if (cache.Length <= MaximumCacheCharacters)
+                return;
+
+            cache.Remove(0, cache.Length - RetainedCacheCharacters);
         }
     }
 }

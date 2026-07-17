@@ -151,7 +151,7 @@ public class SpecialKartConfig
         {
             // 4. 文件不存在时直接使用默认配置
             finalConfig = defaultConfig;
-            Console.WriteLine($"配置已创建：{filePath}");
+            Console.WriteLine($"특수 카트 설정 파일 생성: {filePath}");
         }
 
         // 5. 写入最终配置
@@ -167,7 +167,7 @@ public class SpecialKartConfig
     {
         if (!File.Exists(filePath))
         {
-            throw new FileNotFoundException("特殊道具车配置文件不存在", filePath);
+            throw new FileNotFoundException("특수 아이템 카트 설정 파일이 없습니다.", filePath);
         }
 
         SpecialKartConfig config;
@@ -176,18 +176,18 @@ public class SpecialKartConfig
             config = JsonHelper.DeserializeNoBom<SpecialKartConfig>(filePath);
             if (config == null)
             {
-                throw new Exception("配置文件解析结果为null");
+                throw new Exception("설정 파일을 읽은 결과가 비어 있습니다.");
             }
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"配置文件格式不正确或解析失败: {ex.Message}");
-            Console.WriteLine("将使用默认配置覆盖本地文件...");
+            Console.WriteLine($"특수 카트 설정 파일 형식 오류 또는 읽기 실패: {ex.Message}");
+            Console.WriteLine("기본 설정으로 로컬 파일을 교체합니다...");
 
             // 使用默认配置覆盖本地文件
             config = GetDefaultConfig();
             File.WriteAllText(filePath, JsonHelper.Serialize(config));
-            Console.WriteLine($"本地文件已用默认配置覆盖: {filePath}");
+            Console.WriteLine($"로컬 파일을 기본 설정으로 교체했습니다: {filePath}");
 
             return config;
         }

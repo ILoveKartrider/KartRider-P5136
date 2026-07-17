@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Collections.Concurrent;
 using System.Linq;
 using System.Net;
@@ -7,6 +8,7 @@ using System.Text;
 using System.Threading;
 using KartRider.Common.Network;
 using KartRider.Common.Security;
+using KartRider.Compatibility;
 using KartRider.IO.Packet;
 using KartRider_PacketName;
 using Profile;
@@ -29,7 +31,10 @@ namespace KartRider
         private volatile bool _isRunning;
         // 同步锁（防止重复启动/停止）
         private readonly object _lockObj = new object();
-        private static ConcurrentDictionary<string, (IPEndPoint, uint, bool)> udpClients = new ConcurrentDictionary<string, (IPEndPoint, uint, bool)>();
+        private static readonly GenerationEndpointBindingTable UdpClientBindings =
+            new GenerationEndpointBindingTable();
+        private static readonly GenerationEndpointBindingTable P2pClientBindings =
+            new GenerationEndpointBindingTable();
 
         /// <summary>
         /// 构造函数
@@ -57,7 +62,7 @@ namespace KartRider
             {
                 if (_isRunning)
                 {
-                    Console.WriteLine($"[{_serverName}] 服务端已启动，无需重复启动");
+                    Console.WriteLine($"[{_serverName}] 서버가 이미 실행 중입니다.");
                     return;
                 }
 
@@ -75,15 +80,15 @@ namespace KartRider
 
                     _isRunning = true;
 
-                    Console.WriteLine($"[{_serverName}] 服务端启动成功，监听端口：{_listenPort}");
-                    Console.WriteLine($"[{_serverName}] 等待客户端数据...\n");
+                    Console.WriteLine($"[{_serverName}] 서버 시작 완료, 수신 포트: {_listenPort}");
+                    Console.WriteLine($"[{_serverName}] 클라이언트 데이터 대기 중...\n");
 
                     // 开始异步接收数据（APM模式）
                     BeginReceive();
                 }
                 catch (SocketException ex)
                 {
-                    Console.WriteLine($"[{_serverName}] 启动失败：{ex.Message}（端口可能被占用）");
+                    Console.WriteLine($"[{_serverName}] 서버 시작 실패: {ex.Message} (포트가 사용 중일 수 있습니다.)");
                     _isRunning = false;
                     _udpClient?.Dispose();
                     _udpClient = null;
@@ -91,7 +96,7 @@ namespace KartRider
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"[{_serverName}] 启动异常：{ex.Message}");
+                    Console.WriteLine($"[{_serverName}] 서버 시작 오류: {ex.Message}");
                     _isRunning = false;
                     _udpClient?.Dispose();
                     _udpClient = null;
@@ -109,7 +114,7 @@ namespace KartRider
             {
                 if (!_isRunning)
                 {
-                    Console.WriteLine($"[{_serverName}] 服务端未启动，无需停止");
+                    Console.WriteLine($"[{_serverName}] 서버가 실행 중이 아닙니다.");
                     return;
                 }
 
@@ -119,18 +124,19 @@ namespace KartRider
                 {
                     // 关闭UDP客户端（终止异步接收）
                     _udpClient?.Close();
-                    Console.WriteLine($"[{_serverName}] 服务端停止成功");
+                    Console.WriteLine($"[{_serverName}] 서버 중지 완료");
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"[{_serverName}] 停止异常：{ex.Message}");
+                    Console.WriteLine($"[{_serverName}] 서버 중지 오류: {ex.Message}");
                 }
                 finally
                 {
                     // 释放资源
                     _udpClient?.Dispose();
                     _udpClient = null;
-                    udpClients.Clear();
+                    UdpClientBindings.Clear();
+                    P2pClientBindings.Clear();
                 }
             }
         }
@@ -151,7 +157,7 @@ namespace KartRider
             {
                 if (_isRunning) // 仅在运行中时打印异常（停止时的异常忽略）
                 {
-                    Console.WriteLine($"[{_serverName}] 接收数据异常：{ex.Message}");
+                    Console.WriteLine($"[{_serverName}] 데이터 수신 오류: {ex.Message}");
                     // 延迟重试接收（避免异常循环）
                     ThreadPool.QueueUserWorkItem(_ =>
                     {
@@ -226,8 +232,7 @@ namespace KartRider
                         uint packetName = p.ReadUInt();
                         var packetValue = (PacketName)packetName;
 
-                        string nickname = "";
-                        ClientManager.UserNOToNickname.TryGetValue(accountID, out nickname);
+                        string nickname = ClientManager.GetNickname(accountID) ?? string.Empty;
                         PacketTrace.LogPacket(
                             _serverName,
                             "RX",
@@ -238,15 +243,74 @@ namespace KartRider
                             8,
                             $"account={accountID}; route=0x{hash:X8}; iv=0x{iv:X8}; checksum={(checksumValid ? "OK" : "BAD")}; wireLength={receiveBuffer.Length}",
                             receiveBuffer);
-                        bool p2p = false;
-                        if (!string.IsNullOrEmpty(nickname))
+                        if (!checksumValid)
                         {
-                            var playerConfig = ProfileService.GetProfileConfig(nickname);
-                            IPEndPoint client = ClientManager.ClientToIPEndPoint(playerConfig.Rider.ClientId);
+                            PacketTrace.LogEvent(
+                                _serverName,
+                                "RX-DROP",
+                                GetLocalEndPoint(),
+                                clientEP,
+                                nickname,
+                                "invalid UDP checksum");
+                            return;
+                        }
+
+                        using IDisposable udpIdentityOperation =
+                            ClientManager.TryAcquireIdentityOperation(
+                            accountID,
+                            clientEP.Address,
+                            out nickname,
+                            out long identityGeneration);
+                        if (udpIdentityOperation == null)
+                        {
+                            PacketTrace.LogEvent(
+                                _serverName,
+                                "RX-DROP",
+                                GetLocalEndPoint(),
+                                clientEP,
+                                nickname,
+                                "account has no active identity owner for this source address");
+                            return;
+                        }
+
+                        bool p2p = false;
+                        bool isP2pTransport = string.Equals(
+                            _serverName,
+                            "P2P",
+                            StringComparison.OrdinalIgnoreCase);
+                        var playerConfig = ProfileService.GetProfileConfig(nickname);
+                        IPEndPoint client = ClientManager.ClientToIPEndPoint(playerConfig.Rider.ClientId);
+                        if (client != null)
+                        {
                             var clientudp = new IPEndPoint(client.Address, playerConfig.Rider.UdpPort);
-                            p2p = (clientEP == clientudp);
-                            udpClients.AddOrUpdate(nickname, (clientEP, hash, p2p), (key, oldValue) => (clientEP, hash, p2p));
-                            // Console.WriteLine($"[UDP][{currentTime}][{nickname}] {packetValue}" + ": " + BitConverter.ToString(packetData).Replace("-", " "));
+                            p2p = clientEP.Equals(clientudp);
+                        }
+
+                        GenerationEndpointBindingTable bindingTable = isP2pTransport
+                            ? P2pClientBindings
+                            : UdpClientBindings;
+                        EndpointBindResult bindResult = bindingTable.TryBind(
+                            nickname,
+                            clientEP,
+                            hash,
+                            p2p,
+                            identityGeneration,
+                            out GenerationEndpointBinding routeBinding);
+                        if (bindResult != EndpointBindResult.Bound &&
+                            bindResult != EndpointBindResult.Refreshed &&
+                            bindResult != EndpointBindResult.AdvancedGeneration)
+                        {
+                            PacketTrace.LogEvent(
+                                _serverName,
+                                "RX-DROP",
+                                GetLocalEndPoint(),
+                                clientEP,
+                                nickname,
+                                $"route bind rejected: transport={(isP2pTransport ? "P2P" : "UDP")}; " +
+                                $"result={bindResult}; generation={identityGeneration}; " +
+                                $"boundGeneration={routeBinding?.Generation ?? 0}; " +
+                                $"boundEndpoint={routeBinding?.Endpoint}");
+                            return;
                         }
 
                         if (PacketDispatcher.Dispatch(typeof(UdpServer), packetValue, p, receiveBuffer, clientEP, this))
@@ -280,9 +344,9 @@ namespace KartRider
                                 var room = RoomManager.GetRoom(roomId);
                                 if (room != null)
                                 {
-                                    if (room.Ready != null)
+                                    lock (room)
                                     {
-                                        room.Ready.TryUpdate(nickname, success, false);
+                                        room.Ready?.TryUpdate(nickname, success, false);
                                     }
                                 }
                             }
@@ -374,7 +438,7 @@ namespace KartRider
                         }
                         else
                         {
-                            Console.WriteLine($"Unknown Packet on UDP : {packetValue}");
+                            Console.WriteLine($"알 수 없는 UDP 패킷: {packetValue}");
                         }
                     }
                 }
@@ -387,7 +451,7 @@ namespace KartRider
                         clientEP,
                         null,
                         ex.ToString());
-                    Console.WriteLine($"[{_serverName}] 处理数据异常：{ex.Message}");
+                    Console.WriteLine($"[{_serverName}] 데이터 처리 오류: {ex.Message}");
                 }
             }
             catch (ObjectDisposedException)
@@ -407,7 +471,7 @@ namespace KartRider
                     clientEP,
                     null,
                     ex.ToString());
-                Console.WriteLine($"[{_serverName}] 处理数据异常：{ex.Message}，错误码：{ex.SocketErrorCode}");
+                Console.WriteLine($"[{_serverName}] 데이터 처리 오류: {ex.Message}, 소켓 오류 코드: {ex.SocketErrorCode}");
             }
             catch (Exception ex)
             {
@@ -418,7 +482,7 @@ namespace KartRider
                     clientEP,
                     null,
                     ex.ToString());
-                Console.WriteLine($"[{_serverName}] 处理数据异常：{ex.Message}");
+                Console.WriteLine($"[{_serverName}] 데이터 처리 오류: {ex.Message}");
             }
             finally
             {
@@ -478,7 +542,7 @@ namespace KartRider
                 }
                 else
                 {
-                    Console.WriteLine($"发送失败（部分发送）：{sentBytes} / {data.Length}");
+                    Console.WriteLine($"데이터 일부만 전송됨: {sentBytes} / {data.Length}바이트");
                     return false;
                 }
             }
@@ -494,7 +558,7 @@ namespace KartRider
                     8,
                     $"result=ERROR; {ex.GetType().Name}: {ex.Message}; iv=0x{siv:X8}",
                     data);
-                Console.WriteLine($"发送失败（网络错误）：{ex.Message}，错误码：{ex.SocketErrorCode}");
+                Console.WriteLine($"전송 실패 (네트워크 오류): {ex.Message}, 소켓 오류 코드: {ex.SocketErrorCode}");
                 return false;
             }
             catch (Exception ex)
@@ -509,7 +573,7 @@ namespace KartRider
                     8,
                     $"result=ERROR; {ex.GetType().Name}: {ex.Message}; iv=0x{siv:X8}",
                     data);
-                Console.WriteLine($"发送失败：{ex.Message}");
+                Console.WriteLine($"전송 실패: {ex.Message}");
                 return false;
             }
         }
@@ -528,17 +592,69 @@ namespace KartRider
 
         public static (IPEndPoint, uint, bool) GetUdp(string nickname)
         {
-            if (udpClients.TryGetValue(nickname, out var value))
+            if (UdpClientBindings.TryGet(nickname, out GenerationEndpointBinding value))
             {
-                return (value.Item1, value.Item2, value.Item3);
+                if (ClientManager.IsIdentityGenerationCurrent(nickname, value.Generation))
+                    return (value.Endpoint, value.Hash, value.DirectP2p);
+
+                UdpClientBindings.TryRemove(nickname, value);
             }
-            else
+
+            if (ClientBuildProfiles.Active.Build == ClientBuild.Korean5136 &&
+                ClientManager.GetParent(nickname) == null)
             {
-                var profile = ProfileService.GetProfileConfig(nickname);
-                IPEndPoint client = ClientManager.ClientToIPEndPoint(profile.Rider.ClientId);
-                var udpIP = new IPEndPoint(client.Address, profile.Rider.UdpPort);
-                return (udpIP, 0, false);
+                return (null, 0, false);
             }
+
+            var profile = ProfileService.GetProfileConfig(nickname);
+            IPEndPoint client = ClientManager.ClientToIPEndPoint(profile.Rider.ClientId);
+            if (client == null)
+                return (null, 0, false);
+            var udpIP = new IPEndPoint(client.Address, profile.Rider.UdpPort);
+            return (udpIP, 0, false);
+        }
+
+        public static void RemoveNickname(string nickname)
+        {
+            if (!string.IsNullOrWhiteSpace(nickname))
+            {
+                UdpClientBindings.Remove(nickname);
+                P2pClientBindings.Remove(nickname);
+            }
+        }
+
+        internal static EndpointBindResult BindEndpointForTesting(
+            string nickname,
+            bool p2pTransport,
+            IPEndPoint endpoint,
+            uint hash,
+            bool directP2p,
+            long generation,
+            out GenerationEndpointBinding binding)
+        {
+            return (p2pTransport ? P2pClientBindings : UdpClientBindings).TryBind(
+                nickname,
+                endpoint,
+                hash,
+                directP2p,
+                generation,
+                out binding);
+        }
+
+        internal static bool TryGetEndpointForTesting(
+            string nickname,
+            bool p2pTransport,
+            out GenerationEndpointBinding binding)
+        {
+            return (p2pTransport ? P2pClientBindings : UdpClientBindings).TryGet(
+                nickname,
+                out binding);
+        }
+
+        internal static void ClearEndpointBindingsForTesting()
+        {
+            UdpClientBindings.Clear();
+            P2pClientBindings.Clear();
         }
 
         public void UdpBoardCast(Player player, IPEndPoint udp, OutPacket outPacket)
@@ -553,7 +669,7 @@ namespace KartRider
             {
                 if (tick < player.LastPacketReceived && tick > MultyPlayer.ConvertTick())
                 {
-                    Console.WriteLine($"[{player.Nickname}] 丢包率过高，丢弃数据包");
+                    Console.WriteLine($"[{player.Nickname}] 패킷 손실률이 너무 높아 패킷을 폐기합니다.");
                     return;
                 }
                 player.LastPacketReceived = tick;
@@ -564,5 +680,129 @@ namespace KartRider
                 // Console.WriteLine($"[{udp}][{currentTime}][{nickname}] {packetValue}: {BitConverter.ToString(outPacket.ToArray()).Replace("-", " ")}");
             }
         }
+    }
+
+    internal enum EndpointBindResult
+    {
+        Bound,
+        Refreshed,
+        AdvancedGeneration,
+        EndpointMismatch,
+        StaleGeneration,
+        InvalidInput
+    }
+
+    internal sealed class GenerationEndpointBinding
+    {
+        public GenerationEndpointBinding(
+            IPEndPoint endpoint,
+            uint hash,
+            bool directP2p,
+            long generation)
+        {
+            Endpoint = new IPEndPoint(endpoint.Address, endpoint.Port);
+            Hash = hash;
+            DirectP2p = directP2p;
+            Generation = generation;
+        }
+
+        public IPEndPoint Endpoint { get; }
+        public uint Hash { get; }
+        public bool DirectP2p { get; }
+        public long Generation { get; }
+    }
+
+    internal sealed class GenerationEndpointBindingTable
+    {
+        private readonly ConcurrentDictionary<string, GenerationEndpointBinding> bindings =
+            new ConcurrentDictionary<string, GenerationEndpointBinding>(
+                StringComparer.OrdinalIgnoreCase);
+
+        public EndpointBindResult TryBind(
+            string nickname,
+            IPEndPoint endpoint,
+            uint hash,
+            bool directP2p,
+            long generation,
+            out GenerationEndpointBinding binding)
+        {
+            binding = null;
+            if (string.IsNullOrWhiteSpace(nickname) ||
+                endpoint == null ||
+                endpoint.Port == 0 ||
+                generation <= 0)
+            {
+                return EndpointBindResult.InvalidInput;
+            }
+
+            while (true)
+            {
+                if (!bindings.TryGetValue(nickname, out GenerationEndpointBinding current))
+                {
+                    var first = new GenerationEndpointBinding(
+                        endpoint,
+                        hash,
+                        directP2p,
+                        generation);
+                    if (bindings.TryAdd(nickname, first))
+                    {
+                        binding = first;
+                        return EndpointBindResult.Bound;
+                    }
+
+                    continue;
+                }
+
+                if (current.Generation > generation)
+                {
+                    binding = current;
+                    return EndpointBindResult.StaleGeneration;
+                }
+
+                if (current.Generation == generation &&
+                    !current.Endpoint.Equals(endpoint))
+                {
+                    binding = current;
+                    return EndpointBindResult.EndpointMismatch;
+                }
+
+                var replacement = new GenerationEndpointBinding(
+                    endpoint,
+                    hash,
+                    directP2p,
+                    generation);
+                if (!bindings.TryUpdate(nickname, replacement, current))
+                    continue;
+
+                binding = replacement;
+                return current.Generation == generation
+                    ? EndpointBindResult.Refreshed
+                    : EndpointBindResult.AdvancedGeneration;
+            }
+        }
+
+        public bool TryGet(string nickname, out GenerationEndpointBinding binding)
+        {
+            binding = null;
+            return !string.IsNullOrWhiteSpace(nickname) &&
+                   bindings.TryGetValue(nickname, out binding);
+        }
+
+        public bool TryRemove(string nickname, GenerationEndpointBinding expected)
+        {
+            if (string.IsNullOrWhiteSpace(nickname) || expected == null)
+                return false;
+
+            return ((ICollection<KeyValuePair<string, GenerationEndpointBinding>>)bindings)
+                .Remove(new KeyValuePair<string, GenerationEndpointBinding>(nickname, expected));
+        }
+
+        public void Remove(string nickname)
+        {
+            if (!string.IsNullOrWhiteSpace(nickname))
+                bindings.TryRemove(nickname, out _);
+        }
+
+        public void Clear() => bindings.Clear();
     }
 }

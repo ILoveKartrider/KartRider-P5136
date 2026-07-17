@@ -19,6 +19,8 @@ public class GameRoom
     public uint EndTicks { get; set; } = 0;
     public byte SpeedType { get; set; } = 0;
     public byte GameType { get; set; } = 0;
+    public byte P5136ChannelGameType { get; set; } = 0;
+    public ushort P5136ChannelId { get; set; } = 0;
     public int RoomMaster { get; set; } = 0;
     public uint RoomDataHeader { get; set; } = 0;
     public byte[] RoomData { get; set; } = new byte[32];
@@ -33,6 +35,8 @@ public class GameRoom
     public Dictionary<int, int> Ranking { get; set; } = new Dictionary<int, int>();
     public ConcurrentDictionary<string, bool> Ready { get; set; } = new ConcurrentDictionary<string, bool>();
     public bool StartHandshakePending { get; set; } = false;
+    public long StartHandshakeGeneration { get; set; } = 0;
+    public bool SettlementClosed { get; set; } = true;
 
     // 8个格子（0-7）
     public RoomMember[] _slots = new RoomMember[8];
@@ -446,6 +450,10 @@ public class Player : RoomMember
     public byte Team { get; set; }
     public SessionGroup Session { get; set; }
     public uint LastPacketReceived { get; set; } = 0;
+    public int LastItemBoxRank { get; set; } = -1;
+    public float LastItemBoxX { get; set; }
+    public float LastItemBoxY { get; set; }
+    public float LastItemBoxZ { get; set; }
 }
 
 // AI类

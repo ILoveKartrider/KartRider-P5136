@@ -11,7 +11,8 @@ public static class RoomManager
 {
     // 存储所有房间（键：房间ID，值：房间实例）
     public static ConcurrentDictionary<int, GameRoom> _rooms = new ConcurrentDictionary<int, GameRoom>();
-    private static ConcurrentDictionary<string, int> _playerRoomMap = new ConcurrentDictionary<string, int>();
+    private static ConcurrentDictionary<string, int> _playerRoomMap =
+        new ConcurrentDictionary<string, int>(StringComparer.OrdinalIgnoreCase);
     private static int _nextRoomId = 1; // 下一个可用的房间ID（自增确保唯一）
     private const int PageSize = 10; // 每页10个
 
@@ -40,21 +41,27 @@ public static class RoomManager
     // 获取指定页码的房间列表（每页10个）
     public static Dictionary<int, GameRoom> GetRoomsByPage(int pageIndex)
     {
+        return GetRoomsByPage(pageIndex, null, out _);
+    }
+
+    public static Dictionary<int, GameRoom> GetRoomsByPage(
+        int pageIndex,
+        Func<GameRoom, bool> filter,
+        out int totalCount)
+    {
         // 校验页码合法性（页码不能为负数）
         if (pageIndex < 0)
             throw new ArgumentException("页码索引不能小于0", nameof(pageIndex));
 
-        int totalCount = _rooms.Count;
-        // 计算总页数（从0开始的最大页码+1）
-        int totalPages = (int)Math.Ceiling(totalCount / (double)PageSize);
+        KeyValuePair<int, GameRoom>[] matchingRooms = _rooms
+            .Where(kvp => filter == null || filter(kvp.Value))
+            .OrderBy(kvp => kvp.Key)
+            .ToArray();
+        totalCount = matchingRooms.Length;
 
-        // 如果请求的页码超出范围，返回空字典
-        if (pageIndex >= totalPages)
-            return new Dictionary<int, GameRoom>();
-
-        // 按Key排序后分页（保持结果一致性）
-        var pagedItems = _rooms
-            .OrderBy(kvp => kvp.Key) // 按房间ID排序，可替换为其他排序字段
+        // Filter before pagination so every page and count describe the same
+        // P5136 channel family even while other rooms exist on the server.
+        var pagedItems = matchingRooms
             .Skip(pageIndex * PageSize) // 直接用页码索引计算跳过的数量（无需减1）
             .Take(PageSize)
             .ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
@@ -164,6 +171,82 @@ public static class RoomManager
         return removed;
     }
 
+    /// <summary>
+    /// Idempotently removes an identity without consulting its profile pmap.
+    /// Disconnect cleanup must search both player and observer arrays because
+    /// profile state can change independently of the live room placement.
+    /// </summary>
+    public static bool RemovePlayerByNickname(string nickname)
+    {
+        if (string.IsNullOrWhiteSpace(nickname))
+            return true;
+
+        GameRoom[] candidates = _rooms.Values.ToArray();
+
+        foreach (GameRoom room in candidates)
+        {
+            bool changed = false;
+            lock (room)
+            {
+                for (int index = 0; index < room._slots.Length; index++)
+                {
+                    if (room._slots[index] is Player player &&
+                        string.Equals(player.Nickname, nickname, StringComparison.OrdinalIgnoreCase))
+                    {
+                        room._slots[index] = null;
+                        if (player.ID >= 0 && player.ID < room._IDs.Length &&
+                            ReferenceEquals(room._IDs[player.ID], player))
+                        {
+                            room._IDs[player.ID] = null;
+                        }
+                        changed = true;
+                    }
+                }
+
+                for (int index = 0; index < room.ObIDs.Length; index++)
+                {
+                    if (room.ObIDs[index] is Player observer &&
+                        string.Equals(observer.Nickname, nickname, StringComparison.OrdinalIgnoreCase))
+                    {
+                        room.ObIDs[index] = null;
+                        changed = true;
+                    }
+                }
+
+                for (int index = 0; index < room._IDs.Length; index++)
+                {
+                    if (room._IDs[index] is Player indexedPlayer &&
+                        string.Equals(indexedPlayer.Nickname, nickname, StringComparison.OrdinalIgnoreCase))
+                    {
+                        room._IDs[index] = null;
+                        changed = true;
+                    }
+                }
+
+                room.Ready?.TryRemove(nickname, out _);
+                if (changed)
+                {
+                    Player nextMaster = room._IDs.OfType<Player>().FirstOrDefault();
+                    if (nextMaster != null)
+                    {
+                        room.RoomMaster = nextMaster.ID;
+                        nextMaster.PlayerType = 2;
+                    }
+                    room.CleanupRankings();
+                }
+            }
+
+            if (changed)
+                RemoveRoom(room);
+        }
+
+        _playerRoomMap.TryRemove(nickname, out _);
+        bool remainsInRoom = _rooms.Values.Any(room =>
+            room._slots.Concat(room.ObIDs).OfType<Player>().Any(player =>
+                string.Equals(player.Nickname, nickname, StringComparison.OrdinalIgnoreCase)));
+        return !_playerRoomMap.ContainsKey(nickname) && !remainsInRoom;
+    }
+
     // 获取指定房间中指定位置的状态
     public static SlotStatus TryGetSlotStatus(int roomId, byte slotId)
     {
@@ -253,6 +336,28 @@ public static class RoomManager
                 }
             }
             return null;
+        }
+    }
+
+    public static void RebindPlayerSession(string nickname, SessionGroup session)
+    {
+        if (string.IsNullOrWhiteSpace(nickname) || session == null ||
+            !_playerRoomMap.TryGetValue(nickname, out int roomId) ||
+            !_rooms.TryGetValue(roomId, out GameRoom room))
+        {
+            return;
+        }
+
+        lock (room)
+        {
+            foreach (RoomMember member in room._slots.Concat(room.ObIDs))
+            {
+                if (member is Player player &&
+                    string.Equals(player.Nickname, nickname, StringComparison.OrdinalIgnoreCase))
+                {
+                    player.Session = session;
+                }
+            }
         }
     }
 

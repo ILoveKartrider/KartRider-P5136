@@ -18,6 +18,7 @@ namespace KartRider
         private readonly TextBox bindAddressTextBox = new TextBox();
         private readonly TextBox advertisedAddressTextBox = new TextBox();
         private readonly NumericUpDown loginPortNumeric = new NumericUpDown();
+        private readonly NumericUpDown handshakeDelayNumeric = new NumericUpDown();
         private readonly Label topologyValueLabel = new Label();
         private readonly TextBox logDirectoryTextBox = new TextBox();
         private readonly CheckBox packetTraceCheckBox = new CheckBox();
@@ -27,6 +28,7 @@ namespace KartRider
         private readonly Button startServerButton = new Button();
         private readonly Button stopServerButton = new Button();
         private readonly Button gameSettingsButton = new Button();
+        private readonly Button itemProbabilityButton = new Button();
         private readonly Button saveLogButton = new Button();
         private readonly Label statusLabel = new Label();
         private readonly Label buildValueLabel = new Label();
@@ -38,6 +40,9 @@ namespace KartRider
         private readonly UiLogTextWriter uiError;
 
         private ServerLauncherSettings settings;
+        private ItemProbabilityConfiguration itemProbabilityConfiguration =
+            new ItemProbabilityConfiguration();
+        private IPAddress confirmedUnassignedAdvertisedAddress;
         private bool serverBusy;
         private bool shutdownStarted;
         private bool allowClose;
@@ -130,9 +135,9 @@ namespace KartRider
                 Dock = DockStyle.Fill,
                 Padding = new Padding(14),
                 ColumnCount = 1,
-                RowCount = 9
+                RowCount = 10
             };
-            for (int index = 0; index < 8; index++)
+            for (int index = 0; index < 9; index++)
             {
                 root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             }
@@ -141,15 +146,15 @@ namespace KartRider
             bindAddressTextBox.Dock = DockStyle.Fill;
             bindAddressTextBox.PlaceholderText = "예: 0.0.0.0 또는 127.0.0.1";
             advertisedAddressTextBox.Dock = DockStyle.Fill;
-            advertisedAddressTextBox.PlaceholderText = "클라이언트에 전달할 서버 IPv4";
+            advertisedAddressTextBox.PlaceholderText = "이 서버 PC의 IPv4 (예: 192.168.1.15)";
 
-            lanPresetButton.Text = "LAN 자동 설정";
+            lanPresetButton.Text = "이 서버 PC 내부망 IPv4 자동 입력";
             lanPresetButton.AutoSize = true;
             lanPresetButton.Click += LanPresetButton_Click;
             root.Controls.Add(CreateFieldRow(
-                "바인드 IPv4",
+                "수신 IPv4 (서버 PC)",
                 CreateAddressControls(bindAddressTextBox, lanPresetButton)), 0, 0);
-            root.Controls.Add(CreateFieldRow("광고 IPv4", advertisedAddressTextBox), 0, 1);
+            root.Controls.Add(CreateFieldRow("광고 IPv4 (이 서버 PC 주소)", advertisedAddressTextBox), 0, 1);
 
             loginPortNumeric.Minimum = ClientBuildProfiles.Active.Ports.LoginTcpOffset + 1;
             loginPortNumeric.Maximum = ClientBuildProfiles.Active.Ports.MaximumLoginTcpPort;
@@ -164,18 +169,30 @@ namespace KartRider
             topologyValueLabel.Margin = new Padding(0, 5, 0, 5);
             root.Controls.Add(CreateFieldRow("파생 포트", topologyValueLabel), 0, 3);
 
+            handshakeDelayNumeric.Minimum = 0;
+            handshakeDelayNumeric.Maximum = 5000;
+            handshakeDelayNumeric.Increment = 25;
+            handshakeDelayNumeric.Width = 130;
+            handshakeDelayNumeric.Dock = DockStyle.Left;
+            handshakeDelayNumeric.TextAlign = HorizontalAlignment.Right;
+            root.Controls.Add(CreateFieldRow(
+                "초기 핸드셰이크 지연 (ms)",
+                handshakeDelayNumeric), 0, 4);
+
             logDirectoryTextBox.Dock = DockStyle.Fill;
-            logDirectoryTextBox.PlaceholderText = "패킷 trace 로그 저장 폴더";
+            logDirectoryTextBox.PlaceholderText = "패킷 추적 로그 저장 폴더";
             browseLogDirectoryButton.Text = "폴더 선택";
             browseLogDirectoryButton.AutoSize = true;
             browseLogDirectoryButton.Click += BrowseLogDirectoryButton_Click;
             root.Controls.Add(CreateFieldRow(
                 "로그 폴더",
-                CreatePathControls(logDirectoryTextBox, browseLogDirectoryButton)), 0, 4);
+                CreatePathControls(logDirectoryTextBox, browseLogDirectoryButton)), 0, 5);
 
-            packetTraceCheckBox.Text = "전체 패킷 RX/TX hex trace 기록 (로그가 빠르게 커질 수 있음)";
+            packetTraceCheckBox.Text = "전체 패킷 송수신 16진수 추적 기록 (로그가 빠르게 커질 수 있음)";
             packetTraceCheckBox.AutoSize = true;
-            root.Controls.Add(CreateFieldRow("패킷 trace", packetTraceCheckBox), 0, 5);
+            root.Controls.Add(CreateFieldRow("패킷 추적", packetTraceCheckBox), 0, 5);
+
+            root.SetRow(packetTraceCheckBox.Parent, 6);
 
             FlowLayoutPanel actions = new FlowLayoutPanel
             {
@@ -190,6 +207,10 @@ namespace KartRider
             startServerButton.Font = new Font(Font, FontStyle.Bold);
             ConfigureActionButton(stopServerButton, "서버 중지", StopServerButton_Click);
             ConfigureActionButton(gameSettingsButton, "게임 설정", GameSettingsButton_Click);
+            ConfigureActionButton(
+                itemProbabilityButton,
+                "아이템 확률",
+                ItemProbabilityButton_Click);
             ConfigureActionButton(saveLogButton, "현재 로그 저장", SaveLogButton_Click);
             statusLabel.AutoSize = true;
             statusLabel.Margin = new Padding(16, 11, 0, 0);
@@ -199,24 +220,26 @@ namespace KartRider
                 startServerButton,
                 stopServerButton,
                 gameSettingsButton,
+                itemProbabilityButton,
                 saveLogButton,
                 statusLabel
             });
-            root.Controls.Add(actions, 0, 6);
+            root.Controls.Add(actions, 0, 7);
 
             buildValueLabel.AutoSize = true;
             buildValueLabel.ForeColor = Color.DimGray;
             buildValueLabel.Margin = new Padding(150, 5, 0, 0);
-            root.Controls.Add(buildValueLabel, 0, 7);
+            root.Controls.Add(buildValueLabel, 0, 8);
             root.Controls.Add(new Label
             {
-                Text = "LAN 사용 예: 바인드 0.0.0.0, 광고 192.168.x.x. " +
+                Text = "광고 주소에는 클라이언트가 아니라 이 서버 PC의 IPv4를 입력하세요. " +
+                       "내부망 사용 예: 수신 0.0.0.0, 광고 192.168.x.x. " +
                        "방화벽에는 로그인/메신저 TCP와 게임/P2P UDP 포트를 허용해야 합니다.",
                 AutoSize = true,
                 ForeColor = Color.DimGray,
                 MaximumSize = new Size(850, 0),
                 Margin = new Padding(150, 8, 0, 0)
-            }, 0, 8);
+            }, 0, 9);
 
             page.Controls.Add(root);
             return page;
@@ -302,6 +325,15 @@ namespace KartRider
             loginPortNumeric.Value = loginPort;
             logDirectoryTextBox.Text = settings.LogDirectory;
             packetTraceCheckBox.Checked = settings.EnablePacketTrace;
+            handshakeDelayNumeric.Value = settings.FirstMessageDelayMilliseconds;
+            itemProbabilityConfiguration = new ItemProbabilityConfiguration
+            {
+                RankBand = settings.ItemProbabilityRankBand,
+                Individual = ItemProbabilityConfiguration.CloneEntries(
+                    settings.IndividualItemProbabilities),
+                Team = ItemProbabilityConfiguration.CloneEntries(
+                    settings.TeamItemProbabilities)
+            };
             RefreshTopology();
             RefreshServerStatus();
         }
@@ -317,7 +349,13 @@ namespace KartRider
                 AdvertisedAddress = advertisedAddressTextBox.Text.Trim(),
                 ConfiguredPort = configuredPort,
                 LogDirectory = NormalizeRequiredPath(logDirectoryTextBox.Text, "로그 폴더"),
-                EnablePacketTrace = packetTraceCheckBox.Checked
+                EnablePacketTrace = packetTraceCheckBox.Checked,
+                FirstMessageDelayMilliseconds = decimal.ToInt32(handshakeDelayNumeric.Value),
+                ItemProbabilityRankBand = itemProbabilityConfiguration.RankBand,
+                IndividualItemProbabilities = ItemProbabilityConfiguration.CloneEntries(
+                    itemProbabilityConfiguration.Individual),
+                TeamItemProbabilities = ItemProbabilityConfiguration.CloneEntries(
+                    itemProbabilityConfiguration.Team)
             };
             captured.Validate(ClientBuildProfiles.Active);
             return captured;
@@ -367,6 +405,7 @@ namespace KartRider
             bindAddressTextBox.Enabled = canEdit;
             advertisedAddressTextBox.Enabled = canEdit;
             loginPortNumeric.Enabled = canEdit;
+            handshakeDelayNumeric.Enabled = canEdit;
             logDirectoryTextBox.Enabled = canEdit;
             packetTraceCheckBox.Enabled = canEdit;
             lanPresetButton.Enabled = canEdit;
@@ -375,6 +414,7 @@ namespace KartRider
             startServerButton.Enabled = canEdit;
             stopServerButton.Enabled = !serverBusy && hasResources;
             gameSettingsButton.Enabled = !serverBusy;
+            itemProbabilityButton.Enabled = canEdit;
             saveLogButton.Enabled = !serverBusy;
             RefreshWindowTitle();
         }
@@ -410,14 +450,14 @@ namespace KartRider
             IPAddress lanAddress = ServerLauncherSettings.FindPreferredLanAddress();
             bindAddressTextBox.Text = IPAddress.Any.ToString();
             advertisedAddressTextBox.Text = lanAddress.ToString();
-            AppendLog($"LAN 설정 적용: bind=0.0.0.0, advertise={lanAddress}");
+            AppendLog($"내부망 설정 적용: 수신=0.0.0.0, 광고={lanAddress}");
         }
 
         private void BrowseLogDirectoryButton_Click(object sender, EventArgs e)
         {
             using FolderBrowserDialog dialog = new FolderBrowserDialog
             {
-                Description = "패킷 trace 로그를 저장할 폴더를 선택하세요.",
+                Description = "패킷 추적 로그를 저장할 폴더를 선택하세요.",
                 ShowNewFolderButton = true,
                 SelectedPath = Directory.Exists(logDirectoryTextBox.Text)
                     ? logDirectoryTextBox.Text
@@ -451,6 +491,10 @@ namespace KartRider
             try
             {
                 settings = CaptureSettings();
+                if (!ConfirmAdvertisedAddress(settings))
+                {
+                    return;
+                }
                 ServerLauncherSettingsStore.Save(settings);
                 options = settings.ToServerOptions(ClientBuildProfiles.Active);
             }
@@ -471,12 +515,17 @@ namespace KartRider
                 }
 
                 ClientPortTopology ports = ClientBuildProfiles.Active.Ports;
+                AppendLog($"초기 핸드셰이크 지연: {options.FirstMessageDelayMilliseconds}ms");
                 AppendLog(
-                    $"서버 시작: bind={options.BindAddress}, advertise={options.AdvertisedAddress}, " +
-                    $"login TCP={ports.ResolveLoginTcpPort(options.ConfiguredPort)}, " +
-                    $"game UDP={ports.ResolveUdpPort(options.ConfiguredPort)}, " +
+                    $"아이템 확률: 순위 기준={options.ItemProbabilityRankBand}, " +
+                    $"개인전 사용자 설정={options.IndividualItemProbabilities.Count}종, " +
+                    $"팀전 사용자 설정={options.TeamItemProbabilities.Count}종");
+                AppendLog(
+                    $"서버 시작: 수신={options.BindAddress}, 광고={options.AdvertisedAddress}, " +
+                    $"로그인 TCP={ports.ResolveLoginTcpPort(options.ConfiguredPort)}, " +
+                    $"게임 UDP={ports.ResolveUdpPort(options.ConfiguredPort)}, " +
                     $"P2P UDP={ports.ResolveP2pPort(options.ConfiguredPort)}, " +
-                    $"messenger TCP={ports.ResolveMessengerPort(options.ConfiguredPort)}");
+                    $"메신저 TCP={ports.ResolveMessengerPort(options.ConfiguredPort)}");
             }
             catch (Exception exception)
             {
@@ -528,6 +577,35 @@ namespace KartRider
             RefreshServerStatus();
         }
 
+        private void ItemProbabilityButton_Click(object sender, EventArgs e)
+        {
+            string gameDirectory = string.IsNullOrWhiteSpace(kartRiderDirectory)
+                ? FileName.appDir
+                : kartRiderDirectory;
+            ItemProbabilityConfiguration defaults =
+                ItemProbabilityService.LoadClientDefaults(gameDirectory, out string source);
+            using ItemProbabilityEditorForm dialog = new ItemProbabilityEditorForm(
+                itemProbabilityConfiguration,
+                defaults,
+                source);
+            if (dialog.ShowDialog(this) != DialogResult.OK || dialog.Result == null)
+            {
+                return;
+            }
+
+            itemProbabilityConfiguration = dialog.Result.Clone();
+            if (TrySaveSettings(showSuccess: false, showErrors: true))
+            {
+                string mode = itemProbabilityConfiguration.Individual.Count == 0 &&
+                              itemProbabilityConfiguration.Team.Count == 0
+                    ? "클라이언트 원본 자동 사용"
+                    : "UI 사용자 가중치";
+                AppendLog(
+                    $"아이템 확률 설정 저장: {mode}, " +
+                    $"순위 기준={itemProbabilityConfiguration.RankBand}");
+            }
+        }
+
         private void SaveLogButton_Click(object sender, EventArgs e)
         {
             try
@@ -537,7 +615,7 @@ namespace KartRider
                     Path.GetFullPath(logDirectoryTextBox.Text),
                     $"server-ui_{DateTime.Now:yyyyMMdd_HHmmss}.log");
                 File.WriteAllText(path, logTextBox.Text);
-                AppendLog($"UI 로그 저장: {path}");
+                AppendLog($"화면 로그 저장: {path}");
             }
             catch (Exception exception)
             {
@@ -550,6 +628,10 @@ namespace KartRider
             try
             {
                 settings = CaptureSettings();
+                if (!ConfirmAdvertisedAddress(settings))
+                {
+                    return false;
+                }
                 ServerLauncherSettingsStore.Save(settings);
                 AppendLog($"서버 설정 저장: {ServerLauncherSettingsStore.SettingsPath}");
                 if (showSuccess)
@@ -570,6 +652,33 @@ namespace KartRider
                 }
                 return false;
             }
+        }
+
+        private bool ConfirmAdvertisedAddress(ServerLauncherSettings candidate)
+        {
+            IPAddress advertisedAddress = IPAddress.Parse(candidate.AdvertisedAddress);
+            if (ServerLauncherSettings.IsAddressAssignedLocally(advertisedAddress) ||
+                advertisedAddress.Equals(confirmedUnassignedAdvertisedAddress))
+            {
+                return true;
+            }
+
+            DialogResult result = MessageBox.Show(
+                this,
+                $"광고 주소 {advertisedAddress}는 이 서버 PC의 네트워크 주소에서 찾을 수 없습니다.\n\n" +
+                "클라이언트 PC 주소를 입력한 경우 취소하고 '이 서버 PC 내부망 IPv4 자동 입력'을 누르세요. " +
+                "VPN/NAT 등으로 의도한 주소라면 계속할 수 있습니다.",
+                "광고 주소 확인",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2);
+            if (result != DialogResult.Yes)
+            {
+                return false;
+            }
+
+            confirmedUnassignedAdvertisedAddress = advertisedAddress;
+            return true;
         }
 
         private void AppendLog(string message)
@@ -630,7 +739,6 @@ namespace KartRider
             {
                 await activeServerOperation;
                 await Task.Run(ClientServerRuntime.Stop);
-                TrySaveSettings(showSuccess: false, showErrors: false);
             }
             catch (Exception exception)
             {

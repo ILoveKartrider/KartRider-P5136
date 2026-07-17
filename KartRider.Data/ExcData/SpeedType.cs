@@ -2,8 +2,7 @@ using System;
 using KartRider;
 using System.Collections.Generic;
 using Profile;
-using System.Net;
-using System.Linq;
+using System.Text.RegularExpressions;
 
 namespace ExcData
 {
@@ -548,71 +547,75 @@ namespace ExcData
             TransAccelFactor += 0.18f;
         }
 
+        private static readonly Dictionary<int, byte> RoomSpeedGrades = new Dictionary<int, byte>
+        {
+            { 0, 3 },
+            { 1, 0 },
+            { 2, 1 },
+            { 3, 2 },
+            { 4, 4 },
+            { 5, 5 },
+            { 6, 6 },
+            { 7, 7 },
+            { 8, 8 }
+        };
+
+        private static readonly Dictionary<string, byte> ClassicRoomSpeedGrades =
+            new Dictionary<string, byte>(StringComparer.OrdinalIgnoreCase)
+            {
+                { "BEGINNER", 0 },
+                { "ROOKIE", 1 },
+                { "L3", 2 },
+                { "L2", 3 },
+                { "L1", 4 },
+                { "PRO", 5 }
+            };
+
         /// <summary>
-        /// 解析返回 3个值：(版本string, 速度byte, 无限模式byte)
-        /// 包含“无限”或“無限”=4，不包含=MaxValue
-        /// 解析失败（缺版本/速度）返回 MaxValue
+        /// 방 이름의 ASCII 속도 키워드를 해석한다.
+        /// 현행 물리는 S0~S8, 클래식 물리는 BEGINNER/ROOKIE/L3/L2/L1/PRO를 사용한다.
+        /// KR 토큰이 함께 있으면 한국 클래식 물리를 선택한다.
         /// </summary>
         public static (string version, byte speed, byte infinite)? Parse(string input)
         {
-            if (string.IsNullOrWhiteSpace(input)) return null;
-            string lowerInput = input.ToLowerInvariant();
-
-            // 判断无限
-            bool hasInfinite = lowerInput.Contains("无限") || lowerInput.Contains("無限");
-            byte infinite = hasInfinite ? (byte)4 : byte.MaxValue;
-
-            // 匹配速度
-            string matchedSpeed = "";
-            byte speedValue = byte.MaxValue;
-
-            var allSpeedKeys = speedNames.Values.SelectMany(d => d.Keys)
-                .OrderByDescending(s => s.Length)
-                .ToList();
-
-            foreach (var speed in allSpeedKeys)
+            if (string.IsNullOrWhiteSpace(input))
             {
-                if (lowerInput.Contains(speed.ToLowerInvariant()))
+                return null;
+            }
+
+            Match speedMatch = Regex.Match(
+                input,
+                @"(?<![A-Za-z0-9])S(?<grade>[0-8])(?![A-Za-z0-9])",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            if (speedMatch.Success &&
+                int.TryParse(speedMatch.Groups["grade"].Value, out int grade) &&
+                RoomSpeedGrades.TryGetValue(grade, out byte speed))
+            {
+                byte infinite = grade == 4 || grade == 6 ? speed : byte.MaxValue;
+                return ("国服", speed, infinite);
+            }
+
+            foreach (KeyValuePair<string, byte> pair in ClassicRoomSpeedGrades)
+            {
+                if (!ContainsAsciiKeyword(input, pair.Key))
                 {
-                    matchedSpeed = speed;
-                    break;
+                    continue;
                 }
+
+                bool koreanClassic = ContainsAsciiKeyword(input, "KR") ||
+                    ContainsAsciiKeyword(input, "KOREA");
+                return (koreanClassic ? "韩服复古" : "国服复古", pair.Value, byte.MaxValue);
             }
 
-            // 匹配版本
-            string finalVersion;
+            return null;
+        }
 
-            // 复古模式速度关键字
-            HashSet<string> _retroSpeeds = new HashSet<string>(speedNames["国服复古"].Keys);
-
-            bool isHanfu = lowerInput.Contains("韩服复古") || lowerInput.Contains("韩服");
-
-            if (isHanfu)
-            {
-                finalVersion = "韩服复古";
-            }
-            else if (_retroSpeeds.Contains(matchedSpeed))
-            {
-                finalVersion = "国服复古";
-            }
-            else
-            {
-                finalVersion = "国服";
-            }
-
-            // 获取速度值
-            var speedDictionary = speedNames[finalVersion];
-            if (!speedDictionary.ContainsKey(matchedSpeed))
-            {
-                speedValue = byte.MaxValue; // 速度未找到，设置为MaxValue
-            }
-            else
-            {
-                speedValue = speedDictionary[matchedSpeed];
-            }
-
-            // 返回3个结果
-            return (finalVersion, speedValue, infinite);
+        private static bool ContainsAsciiKeyword(string input, string keyword)
+        {
+            return Regex.IsMatch(
+                input,
+                $@"(?<![A-Za-z0-9]){Regex.Escape(keyword)}(?![A-Za-z0-9])",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
         }
     }
 }

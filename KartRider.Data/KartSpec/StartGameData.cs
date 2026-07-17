@@ -13,17 +13,17 @@ namespace KartRider
         {
             if (StartType == 1)
             {
-                Console.WriteLine("故事模式");
+                Console.WriteLine("스토리 모드");
                 StartGameData.PrKartSpec(Parent, Nickname, StartTimeAttack_SpeedType, KartID, FlyingPetID);
             }
             else if (StartType == 2)
             {
-                Console.WriteLine("挑战者");
+                Console.WriteLine("챌린저 모드");
                 StartGameData.PrchallengerKartSpec(Parent, Nickname, StartTimeAttack_SpeedType, KartID, FlyingPetID);
             }
             else if (StartType == 3)
             {
-                Console.WriteLine("排行计时");
+                Console.WriteLine("랭킹 타임어택");
                 if (StartTimeAttack_StartType == 0)
                 {
                     StartGameData.PrStartTimeAttack(Parent, Nickname, Unk1, Track, StartTimeAttack_SpeedType, KartID, FlyingPetID);
@@ -516,7 +516,7 @@ namespace KartRider
                             speed = parsed.Value.speed;
                             version = parsed.Value.version;
                         }
-                        Console.WriteLine($"RoomName: {room.RoomName}, 速度类型: {StartTimeAttack_SpeedType}, 版本: {version}, 速度: {speed}");
+                        Console.WriteLine($"방 이름: {room.RoomName}, 속도 유형: {StartTimeAttack_SpeedType}, 물리 프리셋: {version}, 속도: {speed}");
                     }
                 }
             }

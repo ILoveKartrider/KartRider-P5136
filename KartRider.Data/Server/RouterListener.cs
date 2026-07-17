@@ -49,8 +49,8 @@ namespace KartRider
 
                 Socket clientSocket = RouterListener.Listener.EndAcceptSocket(ar);
                 Console.WriteLine(
-                    $"[LOGIN TCP] accepted local={clientSocket.LocalEndPoint}, " +
-                    $"remote={clientSocket.RemoteEndPoint}");
+                    $"[로그인 TCP] 연결 수락: 로컬={clientSocket.LocalEndPoint}, " +
+                    $"원격={clientSocket.RemoteEndPoint}");
                 PacketTrace.LogEvent(
                     "LOGIN-TCP",
                     "ACCEPT",
@@ -75,7 +75,7 @@ namespace KartRider
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"发生异常：{ex.Message}");
+                Console.WriteLine($"[로그인 TCP] 연결 수락 중 오류: {ex.Message}");
             }
             finally
             {
@@ -143,7 +143,7 @@ namespace KartRider
                 }
                 foreach (var IP in RouterIPList)
                 {
-                    Console.WriteLine("Load Server IP: {0}:{1}", IP, loginPort);
+                    Console.WriteLine("서버 접속 주소: {0}:{1}", IP, loginPort);
                 }
                 RouterListener.Listener.Start();
                 RouterListener.Listener.BeginAcceptSocket(OnAcceptSocket, RouterListener.Listener);
@@ -153,8 +153,8 @@ namespace KartRider
                 RouterListener.Listener.BeginAcceptSocket(OnAcceptSocket, RouterListener.Listener);
             }
             Console.WriteLine(
-                $"[SERVER] bind={options.BindAddress}; advertise={options.AdvertisedAddress}; " +
-                $"login-tcp={loginPort}; udp={udpPort}; p2p-udp={p2pPort}; messenger-tcp={messengerPort}");
+                $"[서버] 수신={options.BindAddress}; 광고={options.AdvertisedAddress}; " +
+                $"로그인 TCP={loginPort}; 게임 UDP={udpPort}; P2P UDP={p2pPort}; 메신저 TCP={messengerPort}");
         }
 
         /// <summary>
@@ -181,7 +181,7 @@ namespace KartRider
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"[RouterListener] 停止 TCP 监听器异常: {ex.Message}");
+                    Console.WriteLine($"[로그인 TCP] 리스너 중지 오류: {ex.Message}");
                 }
                 Listener = null;
             }
@@ -196,7 +196,7 @@ namespace KartRider
 
             PacketTrace.Stop();
 
-            Console.WriteLine("[RouterListener] 所有服务已停止");
+            Console.WriteLine("[서버] 모든 서비스가 중지되었습니다.");
         }
     }
 }

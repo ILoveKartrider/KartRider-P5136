@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
 
@@ -48,9 +49,38 @@ namespace KartRider.ServerLauncher
                 return;
             }
 
-            foreach (char character in value)
+            List<string> completedLines = null;
+            lock (gate)
             {
-                Write(character);
+                foreach (char character in value)
+                {
+                    if (character == '\n')
+                    {
+                        completedLines ??= new List<string>();
+                        completedLines.Add(prefix + pending.ToString());
+                        pending.Clear();
+                    }
+                    else if (character != '\r')
+                    {
+                        pending.Append(character);
+                    }
+                }
+            }
+
+            if (completedLines == null || completedLines.Count == 0)
+            {
+                return;
+            }
+
+            // PacketTrace writes up to one bounded batch at a time. Preserve the
+            // individual lines while posting the whole batch to WinForms once.
+            if (completedLines.Count == 1)
+            {
+                writeLine(completedLines[0]);
+            }
+            else
+            {
+                writeLine(string.Join(Environment.NewLine, completedLines));
             }
         }
 

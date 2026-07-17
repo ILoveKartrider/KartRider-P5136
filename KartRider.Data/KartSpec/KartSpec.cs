@@ -160,7 +160,7 @@ namespace KartRider
                 // 1. 处理卡丁车ID为0的默认情况
                 if (School || KartID == 0)
                 {
-                    Console.WriteLine("[KartSpec] 卡丁车ID=0, 加载练习车数据");
+                    Console.WriteLine("[카트 성능] 카트 ID=0, 연습용 카트 데이터를 불러옵니다.");
                 }
                 // 2. 处理非默认卡丁车ID
                 else
@@ -168,15 +168,15 @@ namespace KartRider
                     // 2.1 检查KartName字典是否存在该ID
                     if (!Kart.kartName.TryGetValue(KartID, out var Name))
                     {
-                        Console.WriteLine($"[KartSpec] 警告: KartName中未找到ID={KartID}, 加载练习车数据");
+                        Console.WriteLine($"[카트 성능] 경고: KartName에서 ID={KartID}를 찾지 못해 연습용 카트 데이터를 사용합니다.");
                     }
 
-                    Console.WriteLine($"[KartSpec] 加载卡丁车: ID={KartID}, 名称={Name}");
+                    Console.WriteLine($"[카트 성능] 카트 불러옴: ID={KartID}, 이름={Name}");
 
                     // 2.2 检查KartSpec字典是否存在该规格
                     if (!Kart.kartSpec.TryGetValue(Name, out var kartSpecDoc))
                     {
-                        Console.WriteLine($"[KartSpec] 警告: KartSpec中未找到名称={Name}的规格, 使用默认");
+                        Console.WriteLine($"[카트 성능] 경고: KartSpec에서 이름={Name}의 성능을 찾지 못해 기본값을 사용합니다.");
                     }
 
                     // 2.3 解析规格XML并赋值
@@ -185,7 +185,7 @@ namespace KartRider
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[KartSpec] 错误: 获取规格时异常 - {ex.Message}\n堆栈: {ex.StackTrace}, 使用默认");
+                Console.WriteLine($"[카트 성능] 성능을 불러오는 중 오류: {ex.Message}\n호출 스택: {ex.StackTrace}\n기본값을 사용합니다.");
                 // 异常降级: 确保加载默认规格, 避免程序崩溃
             }
         }
@@ -201,7 +201,7 @@ namespace KartRider
             }
             else
             {
-                Console.WriteLine($"[KartSpec] 警告: ID={kartId}的规格XML中无BodyParam节点, 使用默认");
+                Console.WriteLine($"[카트 성능] 경고: ID={kartId}의 성능 XML에 BodyParam 요소가 없어 기본값을 사용합니다.");
             }
         }
 
@@ -225,7 +225,7 @@ namespace KartRider
                 }
                 else
                 {
-                    Console.WriteLine($"[KartSpec] 警告: 属性{config.AttributeName}值{attrValueStr}无效, 用默认值{config.DefaultValue}");
+                    Console.WriteLine($"[카트 성능] 경고: {config.AttributeName} 값 {attrValueStr}이 올바르지 않아 기본값 {config.DefaultValue}을(를) 사용합니다.");
                     config.SetKartProperty(config.DefaultValue);
                 }
             }
@@ -233,9 +233,9 @@ namespace KartRider
             // 2. 加载模型尺寸（单独处理ModelMax.xml）
             var modelMax = LoadModelMaxDimensions(kartId);
             modelMaxX = modelMax.modelMaxX;
-            Console.WriteLine($"[KartSpec] 警告: 属性modelMaxX值为: {modelMaxX}");
+            Console.WriteLine($"[카트 성능] 모델 최대 X축: {modelMaxX}");
             modelMaxY = modelMax.modelMaxY;
-            Console.WriteLine($"[KartSpec] 警告: 属性modelMaxY值为: {modelMaxY}");
+            Console.WriteLine($"[카트 성능] 모델 최대 Y축: {modelMaxY}");
 
             // 3. 设置默认部件类型（Engine/Handle等）
             EngineType = DefaultPartType;
@@ -254,7 +254,7 @@ namespace KartRider
             // 检查文件是否存在
             if (!File.Exists(FileName.ModelMax_LoadFile))
             {
-                Console.WriteLine($"[KartSpec] 警告: ModelMax.xml不存在 - 路径: {FileName.ModelMax_LoadFile}");
+                Console.WriteLine($"[카트 성능] 경고: ModelMax.xml이 없습니다. 경로: {FileName.ModelMax_LoadFile}");
                 return (DefaultModelDimension, DefaultModelDimension);
             }
 
@@ -269,7 +269,7 @@ namespace KartRider
 
                     if (targetNode == null)
                     {
-                        Console.WriteLine($"[KartSpec] 警告: ModelMax.xml中无节点ID={kartId}");
+                        Console.WriteLine($"[카트 성능] 경고: ModelMax.xml에 ID={kartId} 항목이 없습니다.");
                         return (DefaultModelDimension, DefaultModelDimension);
                     }
 
@@ -278,14 +278,14 @@ namespace KartRider
 
                     if (maxXAttr == null || maxYAttr == null)
                     {
-                        Console.WriteLine($"[KartSpec] 警告: ID={kartId} 缺少modelMaxX或modelMaxY属性");
+                        Console.WriteLine($"[카트 성능] 경고: ID={kartId}에 modelMaxX 또는 modelMaxY 속성이 없습니다.");
                         return (DefaultModelDimension, DefaultModelDimension);
                     }
 
                     if (!float.TryParse(maxXAttr.Value, CultureInfo.InvariantCulture, out float modelMaxX) ||
                         !float.TryParse(maxYAttr.Value, CultureInfo.InvariantCulture, out float modelMaxY))
                     {
-                        Console.WriteLine($"[KartSpec] 警告: ID={kartId} 的属性值无法解析为浮点数");
+                        Console.WriteLine($"[카트 성능] 경고: ID={kartId}의 모델 치수를 실수로 해석할 수 없습니다.");
                         return (DefaultModelDimension, DefaultModelDimension);
                     }
 
@@ -294,12 +294,12 @@ namespace KartRider
             }
             catch (XmlException ex)
             {
-                Console.WriteLine($"[KartSpec] 错误: 解析ModelMax.xml失败 - {ex.Message}");
+                Console.WriteLine($"[카트 성능] ModelMax.xml 해석 실패: {ex.Message}");
                 return (DefaultModelDimension, DefaultModelDimension);
             }
             catch (IOException ex)
             {
-                Console.WriteLine($"[KartSpec] 错误: 读取ModelMax.xml失败 - {ex.Message}");
+                Console.WriteLine($"[카트 성능] ModelMax.xml 읽기 실패: {ex.Message}");
                 return (DefaultModelDimension, DefaultModelDimension);
             }
         }
@@ -320,7 +320,7 @@ namespace KartRider
                 {
                     return (boolVal ? 1M : 0M).ToString(CultureInfo.InvariantCulture);
                 }
-                Console.WriteLine($"[KartSpec] 警告: 布尔属性{attributeName}值{attrValue}无效, 用默认值{defaultValue}");
+                Console.WriteLine($"[카트 성능] 경고: 논리 속성 {attributeName} 값 {attrValue}이 올바르지 않아 기본값 {defaultValue}을(를) 사용합니다.");
                 return defaultValue.ToString(CultureInfo.InvariantCulture);
             }
 
@@ -356,7 +356,7 @@ namespace KartRider
                 return result.ToString(CultureInfo.InvariantCulture);
             }
 
-            Console.WriteLine($"[KartSpec] 警告: 属性{actualAttrName}值{attrValue}无效, 用默认值{defaultValue}");
+            Console.WriteLine($"[카트 성능] 경고: {actualAttrName} 값 {attrValue}이 올바르지 않아 기본값 {defaultValue}을(를) 사용합니다.");
             return defaultValue.ToString(CultureInfo.InvariantCulture);
         }
 

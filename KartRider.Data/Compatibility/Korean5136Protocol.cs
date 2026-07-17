@@ -1,4 +1,5 @@
 using KartRider.Common.Utilities;
+using KartRider.Common.Network;
 using KartRider.IO.Packet;
 using ExcData;
 using Profile;
@@ -67,27 +68,6 @@ public static class Korean5136Protocol
 
     private static readonly HashSet<uint> NoOpPackets = CreateNoOpPackets();
 
-    public static void BindSession(SessionGroup session, string clientId)
-    {
-        string nickname = ProfileService.SettingConfig.Name;
-        if (string.IsNullOrWhiteSpace(nickname))
-        {
-            return;
-        }
-
-        session.Client.Nickname = nickname;
-        ClientManager.GetUserNO(nickname);
-
-        if (!FileName.FileNames.ContainsKey(nickname))
-        {
-            FileName.Load(nickname);
-        }
-
-        var config = ProfileService.GetProfileConfig(nickname);
-        config.Rider.ClientId = clientId;
-        ProfileService.Save(nickname, config);
-    }
-
     public static uint SendFirstMessage(SessionGroup parent)
     {
         using (OutPacket outPacket = new OutPacket("PcFirstMessage"))
@@ -102,7 +82,7 @@ public static class Korean5136Protocol
             outPacket.WriteString(FirstKeyText);
             outPacket.WriteBytes(FirstMessageCompatibilityBlock);
             outPacket.WriteString(SecondKeyText);
-            parent.Client.Send(outPacket);
+            parent.Client.SendInitialHandshake(outPacket, FirstKey ^ SecondKey);
         }
 
         return FirstKey ^ SecondKey;
@@ -117,6 +97,15 @@ public static class Korean5136Protocol
             // PqGetRider races that registration and leaves the real request
             // pending, so the paired reply must be emitted here.
             SendAddTimeEventInit(parent);
+            return true;
+        }
+
+        if (Is(hash, "LoRqEventRewardPacket"))
+        {
+            // The remote client registers this pending request after processing
+            // PrLoginVipInfo. Sending the reply eagerly from SendLoginVipInfo
+            // races that registration and leaves higher-latency clients stuck.
+            SendEventReward(parent);
             return true;
         }
 
@@ -141,7 +130,7 @@ public static class Korean5136Protocol
 
         if (Is(hash, "PqLogin"))
         {
-            SendLogin(parent);
+            SendLogin(parent, packet);
             return true;
         }
 
@@ -445,6 +434,28 @@ public static class Korean5136Protocol
         return true;
     }
 
+    public static bool TryResolveRoomGameType(
+        byte channelGameType,
+        out byte roomGameType)
+    {
+        // P5136 uses the same room-list/create type for Combine and Infinite.
+        // Their distinction only survives in the channel-switch game type.
+        switch (channelGameType)
+        {
+            case 67: // speedIndiCombine
+            case 23: // speedIndiInfinite
+                roomGameType = 1;
+                return true;
+            case 68: // speedTeamCombine
+            case 24: // speedTeamInfinite
+                roomGameType = 3;
+                return true;
+            default:
+                roomGameType = 0;
+                return false;
+        }
+    }
+
     public static void SendDynamicCommand(SessionGroup parent)
     {
         using OutPacket response = new OutPacket("PrDynamicCommand");
@@ -501,7 +512,10 @@ public static class Korean5136Protocol
             response.WriteInt(0);
             parent.Client.Send(response);
         }
+    }
 
+    private static void SendEventReward(SessionGroup parent)
+    {
         using OutPacket reward = new OutPacket("LoRpEventRewardPacket");
         reward.WriteInt(0);
         reward.WriteInt(0);
@@ -743,11 +757,36 @@ public static class Korean5136Protocol
         }
     }
 
-    private static void SendLogin(SessionGroup parent)
+    public static bool IsIdentityEstablishingPacket(uint hash) =>
+        Is(hash, "PqCnAuthenLogin") ||
+        Is(hash, "PqLogin") ||
+        Is(hash, "PqChannelMovein");
+
+    private static void SendLogin(SessionGroup parent, InPacket packet)
     {
-        string nickname = EnsureNickname(parent);
+        string requestedNickname;
+        try
+        {
+            requestedNickname = Korean5136LoginProfileReader.ReadUsername(packet);
+        }
+        catch (Exception exception)
+        {
+            RejectLogin(parent, $"PqLogin 계정 프로필을 해석하지 못했습니다: {exception.Message}");
+            return;
+        }
+
+        if (!ClientManager.TryClaimLoginIdentity(
+            parent,
+            requestedNickname,
+            out string nickname,
+            out uint userNo,
+            out string rejectionReason))
+        {
+            RejectLogin(parent, rejectionReason);
+            return;
+        }
+
         var config = ProfileService.GetProfileConfig(nickname);
-        uint userNo = ClientManager.GetUserNO(nickname);
         IPAddress serverAddress = GetLegacyServerAddress();
         ClientPortTopology ports = ClientBuildProfiles.Active.Ports;
         ushort configuredPort = ClientServerRuntime.ConfiguredPort;
@@ -786,6 +825,19 @@ public static class Korean5136Protocol
         response.WriteByte(0);
         response.WriteByte(config.GameOption.Set_screen);
         parent.Client.Send(response);
+    }
+
+    private static void RejectLogin(SessionGroup parent, string reason)
+    {
+        PacketTrace.LogEvent(
+            "LOGIN-TCP",
+            "LOGIN-REJECT",
+            parent.Client.GetLocalEndPoint(),
+            parent.Client.GetRemoteEndPoint(),
+            parent.Client.Nickname,
+            reason);
+        Console.WriteLine($"로그인 거부: {parent.Client.GetRemoteEndPoint()} - {reason}");
+        parent.Client.Disconnect();
     }
 
     private static void SendRider(SessionGroup parent)
@@ -1024,11 +1076,9 @@ public static class Korean5136Protocol
 
     private static string EnsureNickname(SessionGroup parent)
     {
-        if (string.IsNullOrWhiteSpace(parent.Client.Nickname))
-        {
-            parent.Client.Nickname = ProfileService.SettingConfig.Name;
-        }
         string nickname = parent.Client.Nickname;
+        if (string.IsNullOrWhiteSpace(nickname))
+            throw new InvalidOperationException("인증되지 않은 P5136 세션입니다.");
         if (!FileName.FileNames.ContainsKey(nickname))
         {
             FileName.Load(nickname);
@@ -1084,7 +1134,6 @@ public static class Korean5136Protocol
             "PqTimeShopOpenTimePacket",
             "PqItemPresetSlotDataList",
             "VipPlaytimeCheck",
-            "LoRqEventRewardPacket",
             "LoRqGetRiderItemPacket",
             "LoRqUploadFilePacket",
             "PqGetRiderQuestUX2ndData"

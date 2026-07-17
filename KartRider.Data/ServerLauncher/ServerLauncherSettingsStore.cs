@@ -1,13 +1,9 @@
 using System;
 using System.IO;
-using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using System.Net;
-using System.Net.Sockets;
 using KartRider.Compatibility;
-using Profile;
 
 namespace KartRider.ServerLauncher
 {
@@ -29,52 +25,39 @@ namespace KartRider.ServerLauncher
 
         public static ServerLauncherSettings LoadOrDefault()
         {
-            if (!File.Exists(SettingsPath))
+            return LoadOrDefault(SettingsPath);
+        }
+
+        internal static ServerLauncherSettings LoadOrDefault(string settingsPath)
+        {
+            string path = Path.GetFullPath(settingsPath);
+            if (!File.Exists(path))
             {
-                ServerLauncherSettings migrated = ServerLauncherSettings.CreateDefault();
-                if (IPAddress.TryParse(ProfileService.SettingConfig.ServerIP, out IPAddress legacyAddress) &&
-                    legacyAddress.AddressFamily == AddressFamily.InterNetwork &&
-                    !legacyAddress.Equals(IPAddress.Any))
-                {
-                    // The old field was never used for binding. Preserve it only
-                    // as the advertised address while retaining the old Any bind.
-                    migrated.BindAddress = IPAddress.IsLoopback(legacyAddress)
-                        ? IPAddress.Loopback.ToString()
-                        : IPAddress.Any.ToString();
-                    migrated.AdvertisedAddress = legacyAddress.ToString();
-                }
-
-                try
-                {
-                    ClientBuildProfiles.Active.Ports.ResolveMessengerPort(
-                        ProfileService.SettingConfig.ServerPort);
-                    if (ProfileService.SettingConfig.ServerPort != 0)
-                    {
-                        migrated.ConfiguredPort = ProfileService.SettingConfig.ServerPort;
-                    }
-                }
-                catch (InvalidOperationException)
-                {
-                }
-
-                return migrated;
+                // Server endpoint settings are machine-local. Never seed them
+                // from the connector target stored in Profile/Settings.json.
+                return ServerLauncherSettings.CreateDefault();
             }
 
             try
             {
-                byte[] json = File.ReadAllBytes(SettingsPath);
+                byte[] json = File.ReadAllBytes(path);
                 return JsonSerializer.Deserialize<ServerLauncherSettings>(json, SerializerOptions)
                     ?? throw new InvalidDataException("서버 설정 JSON 루트가 null입니다.");
             }
             catch (JsonException exception)
             {
                 throw new InvalidDataException(
-                    $"서버 설정 JSON이 올바르지 않습니다: {SettingsPath}",
+                    $"서버 설정 JSON이 올바르지 않습니다: {path}",
                     exception);
             }
         }
 
         public static void Save(ServerLauncherSettings settings)
+        {
+            Save(settings, SettingsPath);
+        }
+
+        internal static void Save(ServerLauncherSettings settings, string settingsPath)
         {
             if (settings == null)
             {
@@ -83,7 +66,7 @@ namespace KartRider.ServerLauncher
 
             settings.Validate(ClientBuildProfiles.Active);
 
-            string path = SettingsPath;
+            string path = Path.GetFullPath(settingsPath);
             string directory = Path.GetDirectoryName(path)
                 ?? throw new InvalidOperationException("서버 설정 폴더를 확인할 수 없습니다.");
             Directory.CreateDirectory(directory);

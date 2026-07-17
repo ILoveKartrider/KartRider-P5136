@@ -1,5 +1,6 @@
 using KartRider.Compatibility;
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -25,6 +26,17 @@ namespace KartRider.ServerLauncher
 
         public bool EnablePacketTrace { get; set; } = true;
 
+        public int FirstMessageDelayMilliseconds { get; set; } = 250;
+
+        public ItemProbabilityRankBand ItemProbabilityRankBand { get; set; } =
+            ItemProbabilityRankBand.Live;
+
+        public List<ItemProbabilityEntry> IndividualItemProbabilities { get; set; } =
+            new List<ItemProbabilityEntry>();
+
+        public List<ItemProbabilityEntry> TeamItemProbabilities { get; set; } =
+            new List<ItemProbabilityEntry>();
+
         public static string DefaultLogDirectory =>
             Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "logs"));
 
@@ -42,7 +54,13 @@ namespace KartRider.ServerLauncher
                 AdvertisedAddress = IPAddress.Parse(AdvertisedAddress),
                 ConfiguredPort = checked((ushort)ConfiguredPort),
                 LogDirectory = Path.GetFullPath(LogDirectory),
-                EnablePacketTrace = EnablePacketTrace
+                EnablePacketTrace = EnablePacketTrace,
+                FirstMessageDelayMilliseconds = FirstMessageDelayMilliseconds,
+                ItemProbabilityRankBand = ItemProbabilityRankBand,
+                IndividualItemProbabilities = ItemProbabilityConfiguration.CloneEntries(
+                    IndividualItemProbabilities),
+                TeamItemProbabilities = ItemProbabilityConfiguration.CloneEntries(
+                    TeamItemProbabilities)
             };
         }
 
@@ -74,7 +92,13 @@ namespace KartRider.ServerLauncher
                 AdvertisedAddress = IPAddress.Parse(AdvertisedAddress),
                 ConfiguredPort = checked((ushort)ConfiguredPort),
                 LogDirectory = Path.GetFullPath(LogDirectory),
-                EnablePacketTrace = EnablePacketTrace
+                EnablePacketTrace = EnablePacketTrace,
+                FirstMessageDelayMilliseconds = FirstMessageDelayMilliseconds,
+                ItemProbabilityRankBand = ItemProbabilityRankBand,
+                IndividualItemProbabilities = ItemProbabilityConfiguration.CloneEntries(
+                    IndividualItemProbabilities),
+                TeamItemProbabilities = ItemProbabilityConfiguration.CloneEntries(
+                    TeamItemProbabilities)
             };
             options.Validate(profile);
         }
@@ -130,14 +154,22 @@ namespace KartRider.ServerLauncher
             return IPAddress.Loopback;
         }
 
-        private static void ValidateIpv4(string value, string label, bool allowAny)
+        public static bool IsAddressAssignedLocally(IPAddress address)
         {
-            if (!IPAddress.TryParse(value, out IPAddress address) ||
-                address.AddressFamily != AddressFamily.InterNetwork ||
-                (!allowAny && IPAddress.Any.Equals(address)))
+            if (IPAddress.IsLoopback(address))
             {
-                string suffix = allowAny ? string.Empty : " (0.0.0.0 제외)";
-                throw new InvalidDataException($"{label} 값은 올바른 IPv4 주소여야 합니다{suffix}.");
+                return true;
+            }
+
+            try
+            {
+                return NetworkInterface.GetAllNetworkInterfaces()
+                    .SelectMany(adapter => adapter.GetIPProperties().UnicastAddresses)
+                    .Any(item => item.Address.Equals(address));
+            }
+            catch (NetworkInformationException)
+            {
+                return false;
             }
         }
 
@@ -147,6 +179,17 @@ namespace KartRider.ServerLauncher
             return bytes[0] == 10 ||
                    bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31 ||
                    bytes[0] == 192 && bytes[1] == 168;
+        }
+
+        private static void ValidateIpv4(string value, string label, bool allowAny)
+        {
+            if (!IPAddress.TryParse(value, out IPAddress address) ||
+                address.AddressFamily != AddressFamily.InterNetwork ||
+                (!allowAny && IPAddress.Any.Equals(address)))
+            {
+                string suffix = allowAny ? string.Empty : " (0.0.0.0 제외)";
+                throw new InvalidDataException($"{label} 값은 올바른 IPv4 주소여야 합니다{suffix}.");
+            }
         }
 
         private static bool LooksVirtual(NetworkInterface adapter)
