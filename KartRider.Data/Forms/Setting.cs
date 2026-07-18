@@ -17,11 +17,15 @@ namespace KartRider
             ["国服"] = "중국 현행 물리",
             ["国服复古"] = "중국 클래식 물리",
             ["韩服复古"] = "한국 클래식 물리",
-            ["标准"] = "표준",
-            ["慢速"] = "느림",
-            ["普通"] = "보통",
-            ["快速"] = "빠름",
-            ["高速"] = "매우 빠름",
+            ["S0"] = "S0 · 보통",
+            ["S1"] = "S1 · 빠름",
+            ["S2"] = "S2 · 매우 빠름",
+            ["S3"] = "S3 · 가장 빠름",
+            ["S4"] = "S4 · 무한부스터",
+            ["S5"] = "S5 · CGS LTE",
+            ["S6"] = "S6 · 진·무한부스터",
+            ["S7"] = "S7 · 통합 스피드",
+            ["S8"] = "S8 · 통합 아이템",
             ["新手"] = "초보",
             ["初级"] = "루키",
             ["Pro"] = "PRO",
@@ -32,8 +36,9 @@ namespace KartRider
 
         private const string RoomNameKeywordHelp =
             "방 이름 키워드 (위 서버 설정보다 우선)\r\n" +
-            "현행: S0=느림 · S1=보통 · S2=빠름 · S3=매우 빠름\r\n" +
-            "특수: S4=무한부스터 · S5=CGS LTE · S6=진·무한부스터 · S7/S8=표준\r\n" +
+            "현행: S0=보통 · S1=빠름 · S2=매우 빠름 · S3=가장 빠름\r\n" +
+            "특수: S4=무한부스터 · S5=CGS LTE · S6=진·무한부스터\r\n" +
+            "통합: S7=스피드 · S8=아이템\r\n" +
             "클래식: BEGINNER · ROOKIE · L3 · L2 · L1 · PRO (한국 물리: KR 추가)";
 
         public string[] AiSpeed = new string[] { "简单", "困难", "地狱" };
@@ -43,6 +48,9 @@ namespace KartRider
         public Setting()
         {
             InitializeComponent();
+            Version_comboBox.FormattingEnabled = true;
+            Speed_comboBox.FormattingEnabled = true;
+            AiSpeed_comboBox.FormattingEnabled = true;
             Version_comboBox.Format += LocalizeComboBoxItem;
             Speed_comboBox.Format += LocalizeComboBoxItem;
             AiSpeed_comboBox.Format += LocalizeComboBoxItem;
@@ -110,6 +118,23 @@ namespace KartRider
             {
                 Speed_comboBox.Items.Add(key);
             }
+        }
+
+        private static string GetDefaultSpeedOption(
+            string version,
+            Dictionary<string, byte> speedOptions)
+        {
+            if (version == "国服")
+            {
+                string integratedSpeed = speedOptions
+                    .FirstOrDefault(pair => pair.Value == 7).Key;
+                if (integratedSpeed != null)
+                {
+                    return integratedSpeed;
+                }
+            }
+
+            return speedOptions.Keys.First();
         }
 
         private void OnFormClosing(object sender, FormClosingEventArgs e)
@@ -203,7 +228,9 @@ namespace KartRider
                 .FirstOrDefault(pair => pair.Value == ProfileService.SettingConfig.SpeedType).Key;
             if (configuredSpeed == null)
             {
-                configuredSpeed = configuredSpeedOptions.Keys.First();
+                configuredSpeed = GetDefaultSpeedOption(
+                    configuredVersion,
+                    configuredSpeedOptions);
                 ProfileService.SettingConfig.SpeedType = configuredSpeedOptions[configuredSpeed];
                 settingsChanged = true;
             }
@@ -279,8 +306,10 @@ namespace KartRider
                         PopulateSpeedOptions(selectedVersion);
                         if (Speed_comboBox.Items.Count > 0)
                         {
-                            Speed_comboBox.SelectedIndex = 0;
-                            string selectedSpeed = (string)Speed_comboBox.SelectedItem;
+                            string selectedSpeed = GetDefaultSpeedOption(
+                                selectedVersion,
+                                speedOptions);
+                            Speed_comboBox.SelectedItem = selectedSpeed;
                             ProfileService.SettingConfig.SpeedType = speedOptions[selectedSpeed];
                         }
                     }

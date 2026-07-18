@@ -41,6 +41,7 @@ namespace Profile
         public static string Load_Settings = Path.GetFullPath(Path.Combine(ProfileDir, @"Settings.json"));
         public static string Load_TrackRank = Path.GetFullPath(Path.Combine(appDir, @"TrackRank"));
         public static string ModelMax_LoadFile = Path.GetFullPath(Path.Combine(ProfileDir, @"ModelMax.xml"));
+        public static string KartCatalog_LoadFile = Path.GetFullPath(Path.Combine(ProfileDir, @"KartCatalog.xml"));
         public static string SpecialKartConfig = Path.GetFullPath(Path.Combine(ProfileDir, @"SpecialKartConfig.json"));
         public static string Coupon = Path.GetFullPath(Path.Combine(ProfileDir, @"Coupon.json"));
 

@@ -10,7 +10,21 @@ namespace ExcData
     {
         public static Dictionary<string, Dictionary<string, byte>> speedNames = new Dictionary<string, Dictionary<string, byte>>
         {
-            { "国服", new Dictionary<string, byte> { { "标准", 7 }, { "慢速", 3 }, { "普通", 0 }, { "快速", 1 }, { "高速", 2 } } },
+            {
+                "国服",
+                new Dictionary<string, byte>
+                {
+                    { "S0", 3 },
+                    { "S1", 0 },
+                    { "S2", 1 },
+                    { "S3", 2 },
+                    { "S4", 4 },
+                    { "S5", 5 },
+                    { "S6", 6 },
+                    { "S7", 7 },
+                    { "S8", 8 }
+                }
+            },
             { "国服复古", new Dictionary<string, byte> { { "新手", 0 }, { "初级", 1 }, { "L3", 2 }, { "L2", 3 }, { "L1", 4 }, { "Pro", 5 } } },
             { "韩服复古", new Dictionary<string, byte> { { "新手", 0 }, { "初级", 1 }, { "L3", 2 }, { "L2", 3 }, { "L1", 4 }, { "Pro", 5 } } }
         };
@@ -48,7 +62,7 @@ namespace ExcData
             {
                 if (version == "国服")
                 {
-                    if (SpeedType == 3)//S0 慢速
+                    if (SpeedType == 3)//S0 보통
                     {
                         Console.WriteLine("SpeedType:S0");
                         AddSpec_SteerConstraint = -0.3f;
@@ -76,7 +90,7 @@ namespace ExcData
                         NormalBoosterTime = 0f;
                         TeamBoosterTime = 0f;
                     }
-                    else if (SpeedType == 0)//S1 普通
+                    else if (SpeedType == 0)//S1 빠름
                     {
                         Console.WriteLine("SpeedType:S1");
                         AddSpec_SteerConstraint = 1.7f;
@@ -104,7 +118,7 @@ namespace ExcData
                         NormalBoosterTime = 0f;
                         TeamBoosterTime = 0f;
                     }
-                    else if (SpeedType == 1)//S2 快速
+                    else if (SpeedType == 1)//S2 매우 빠름
                     {
                         Console.WriteLine("SpeedType:S2");
                         AddSpec_SteerConstraint = 2.2f;
@@ -132,7 +146,7 @@ namespace ExcData
                         NormalBoosterTime = 0f;
                         TeamBoosterTime = 0f;
                     }
-                    else if (SpeedType == 2)//S3 高速
+                    else if (SpeedType == 2)//S3 가장 빠름
                     {
                         Console.WriteLine("SpeedType:S3");
                         AddSpec_SteerConstraint = 2.7f;
@@ -223,12 +237,12 @@ namespace ExcData
                         NormalBoosterTime = 2000000f;
                         TeamBoosterTime = 2000000f;
                     }
-                    else if (SpeedType == 7)//S7 标准速度
+                    else if (SpeedType == 7)//S7 통합 스피드
                     {
                         Console.WriteLine("SpeedType:S7");
                         Default();
                     }
-                    else if (SpeedType == 8)//S8 标准速度
+                    else if (SpeedType == 8)//S8 통합 아이템
                     {
                         Console.WriteLine("SpeedType:S8");
                         AddSpec_SteerConstraint = 1.95f;

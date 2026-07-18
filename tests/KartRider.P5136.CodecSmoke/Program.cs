@@ -18,9 +18,457 @@ using System.Linq;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Xml.Linq;
+
+string rhoCatalogTestRoot = Environment.GetEnvironmentVariable("P5136_RHO_CATALOG_ROOT");
+if (!string.IsNullOrWhiteSpace(rhoCatalogTestRoot))
+{
+    string configuredCatalogOutput =
+        Environment.GetEnvironmentVariable("P5136_RHO_CATALOG_OUTPUT");
+    bool keepCatalogOutput = !string.IsNullOrWhiteSpace(configuredCatalogOutput);
+    string catalogPath = keepCatalogOutput
+        ? Path.GetFullPath(configuredCatalogOutput)
+        : Path.Combine(
+            Path.GetTempPath(),
+            $"P5136-KartCatalog-{Environment.ProcessId}.xml");
+    try
+    {
+        if (!KartRhoFile.TryExportKartCatalogXmlReadOnly(
+                rhoCatalogTestRoot,
+                catalogPath,
+                out int exportedNameCount,
+                out int exportedSpecCount,
+                out string exportError))
+        {
+            Console.Error.WriteLine($"P5136 RHO kart catalog export failed: {exportError}");
+            return 1;
+        }
+
+        XDocument exportedCatalog = XDocument.Load(catalogPath);
+        XElement itemSymbolsRoot = exportedCatalog.Root?.Element("ItemSymbols");
+        XElement abilityRoot = exportedCatalog.Root?.Element("Abilities");
+        bool HasItemSymbol(string name, string id) => itemSymbolsRoot?
+            .Elements("Item")
+            .Any(item =>
+                item.Attribute("name")?.Value == name &&
+                item.Attribute("id")?.Value == id &&
+                !string.IsNullOrWhiteSpace(item.Attribute("evidence")?.Value)) == true;
+        XElement goldenChickenBananaRule = abilityRoot?
+            .Element("TransformByKart")?
+            .Elements("Rule")
+            .FirstOrDefault(rule =>
+                rule.Attribute("kartId")?.Value == "1453" &&
+                rule.Attribute("srcIdx")?.Value == "banana" &&
+                rule.Attribute("dstIdx")?.Value == "goldEggMine" &&
+                rule.Attribute("sourceId")?.Value == "8" &&
+                rule.Attribute("targetId")?.Value == "83");
+        XElement goldenChickenMagnetRule = abilityRoot?
+            .Element("TransformByKart")?
+            .Elements("Rule")
+            .FirstOrDefault(rule =>
+                rule.Attribute("kartId")?.Value == "1453" &&
+                rule.Attribute("srcIdx")?.Value == "magnet" &&
+                rule.Attribute("dstIdx")?.Value == "superMagnet" &&
+                rule.Attribute("sourceId")?.Value == "5" &&
+                rule.Attribute("targetId")?.Value == "103");
+        XElement redLotusMagnetRule = abilityRoot?
+            .Element("FiringToGain")?
+            .Elements("Rule")
+            .FirstOrDefault(rule =>
+                rule.Attribute("kartId")?.Value == "1450" &&
+                rule.Attribute("firingItemIdx")?.Value == "magnet" &&
+                rule.Attribute("gainItemIdx")?.Value == "siren" &&
+                rule.Attribute("probability")?.Value == "100" &&
+                rule.Attribute("sourceId")?.Value == "5" &&
+                rule.Attribute("targetId")?.Value == "24");
+        XElement redLotusRocketRule = abilityRoot?
+            .Element("FiringToGain")?
+            .Elements("Rule")
+            .FirstOrDefault(rule =>
+                rule.Attribute("kartId")?.Value == "1450" &&
+                rule.Attribute("firingItemIdx")?.Value == "rocket" &&
+                rule.Attribute("gainItemIdx")?.Value == "magnet" &&
+                rule.Attribute("probability")?.Value == "33" &&
+                rule.Attribute("sourceId")?.Value == "7" &&
+                rule.Attribute("targetId")?.Value == "5");
+        bool hasUnpackedExecutable = File.Exists(Path.Combine(
+            Path.GetFullPath(rhoCatalogTestRoot),
+            "KartRiderU.exe"));
+        int totalAbilityCount = 0;
+        int resolvedAbilityCount = 0;
+        bool hasValidAbilityCounts = int.TryParse(
+                abilityRoot?.Attribute("total")?.Value,
+                out totalAbilityCount) &&
+            int.TryParse(
+                abilityRoot?.Attribute("resolved")?.Value,
+                out resolvedAbilityCount) &&
+            totalAbilityCount == 721 &&
+            resolvedAbilityCount >= (hasUnpackedExecutable ? 719 : 294) &&
+            resolvedAbilityCount <= totalAbilityCount;
+        if (exportedCatalog.Root?.Attribute("formatVersion")?.Value != "2" ||
+            exportedCatalog.Root?.Attribute("protocolVersion")?.Value != "5136" ||
+            exportedCatalog.Root?.Attribute("region")?.Value != "kr" ||
+            exportedCatalog.Root?.Attribute("sourceAaaSha256")?.Value.Length != 64 ||
+            (hasUnpackedExecutable &&
+                exportedCatalog.Root?.Attribute("sourceExecutableSha256")?.Value.Length != 64) ||
+            itemSymbolsRoot?.Attribute("resolution")?.Value != "verified-partial" ||
+            abilityRoot?.Attribute("numericResolution")?.Value != "verified-partial" ||
+            !HasItemSymbol("goldEggMine", "83") ||
+            !HasItemSymbol("superMagnet", "103") ||
+            !HasItemSymbol("siren", "24") ||
+            goldenChickenBananaRule == null ||
+            goldenChickenMagnetRule == null ||
+            redLotusMagnetRule == null ||
+            redLotusRocketRule == null ||
+            !hasValidAbilityCounts)
+        {
+            Console.Error.WriteLine(
+                "P5136 verified-partial kart ability catalog validation failed: " +
+                $"format={exportedCatalog.Root?.Attribute("formatVersion")?.Value}; " +
+                $"symbols={itemSymbolsRoot?.Attribute("resolution")?.Value}; " +
+                $"abilities={abilityRoot?.Attribute("numericResolution")?.Value}; " +
+                $"goldEgg={HasItemSymbol("goldEggMine", "83")}; " +
+                $"superMagnet={HasItemSymbol("superMagnet", "103")}; " +
+                $"siren={HasItemSymbol("siren", "24")}; " +
+                $"rules={goldenChickenBananaRule != null}/" +
+                $"{goldenChickenMagnetRule != null}/{redLotusMagnetRule != null}/" +
+                $"{redLotusRocketRule != null}; counts={hasValidAbilityCounts} " +
+                $"({resolvedAbilityCount}/{totalAbilityCount})");
+            return 1;
+        }
+
+        Kart.kartName = new Dictionary<int, string>();
+        Kart.kartSpec = new Dictionary<string, System.Xml.XmlDocument>();
+        if (!KartRhoFile.TryLoadKartCatalogXml(
+                catalogPath,
+                out int kartNameCount,
+                out int kartSpecCount,
+                out string loadError) ||
+            File.Exists(catalogPath + ".new") ||
+            kartNameCount != exportedNameCount ||
+            kartSpecCount != exportedSpecCount ||
+            kartNameCount < 100 ||
+            kartSpecCount < 100 ||
+            !Kart.kartName.TryGetValue(1453, out string goldenChickenName) ||
+            !Kart.kartSpec.TryGetValue(goldenChickenName, out var goldenChickenSpec) ||
+            !Kart.kartName.TryGetValue(1450, out string redLotusName) ||
+            !Kart.kartSpec.TryGetValue(redLotusName, out var redLotusSpec) ||
+            goldenChickenSpec.GetElementsByTagName("BodyParam").Count == 0 ||
+            goldenChickenSpec.GetElementsByTagName("BodyParam")[0] is not System.Xml.XmlElement goldenChickenBody ||
+            goldenChickenBody.GetAttribute("ItemSlotCapacity") != "3" ||
+            goldenChickenBody.GetAttribute("SpecialSlotCapacity") != "2" ||
+            redLotusSpec.GetElementsByTagName("BodyParam").Count == 0 ||
+            redLotusSpec.GetElementsByTagName("BodyParam")[0] is not System.Xml.XmlElement redLotusBody ||
+            redLotusBody.GetAttribute("ItemSlotCapacity") != "3" ||
+            redLotusBody.GetAttribute("SpecialSlotCapacity") != "2" ||
+            KartCatalogAbilities.ResolvedRuleCount == 0)
+        {
+            Console.Error.WriteLine(
+                $"P5136 kart catalog XML load failed: names={kartNameCount}, " +
+                $"specs={kartSpecCount}, error={loadError}");
+            return 1;
+        }
+
+        int ReadFiringStep(XElement rule) => int.TryParse(
+            rule.Attribute("firingStep")?.Value,
+            out int step)
+                ? step
+                : 0;
+        if (!KartCatalogAbilities.TryGetTransform(
+                1453,
+                8,
+                goldenChickenBananaRule.Attribute("gitType")?.Value ?? string.Empty,
+                out KartCatalogAbilityRule runtimeGoldenBanana) ||
+            runtimeGoldenBanana.TargetItemId != 83 ||
+            !KartCatalogAbilities.TryGetTransform(
+                1453,
+                5,
+                goldenChickenMagnetRule.Attribute("gitType")?.Value ?? string.Empty,
+                out KartCatalogAbilityRule runtimeGoldenMagnet) ||
+            runtimeGoldenMagnet.TargetItemId != 103 ||
+            !KartCatalogAbilities.HasTransformDefinition(1453, 8) ||
+            KartCatalogAbilities.TryGetTransform(
+                1453,
+                8,
+                "FlagIndi",
+                out _) ||
+            !KartCatalogAbilities.TryGetFiringToGain(
+                1450,
+                5,
+                ReadFiringStep(redLotusMagnetRule),
+                redLotusMagnetRule.Attribute("gameType")?.Value ?? string.Empty,
+                out KartCatalogAbilityRule runtimeRedLotusMagnet) ||
+            runtimeRedLotusMagnet.TargetItemId != 24 ||
+            runtimeRedLotusMagnet.Probability != 100 ||
+            !KartCatalogAbilities.TryGetFiringToGain(
+                1450,
+                7,
+                ReadFiringStep(redLotusRocketRule),
+                redLotusRocketRule.Attribute("gameType")?.Value ?? string.Empty,
+                out KartCatalogAbilityRule runtimeRedLotusRocket) ||
+            runtimeRedLotusRocket.TargetItemId != 5 ||
+            runtimeRedLotusRocket.Probability != 33)
+        {
+            Console.Error.WriteLine("P5136 loaded kart ability runtime lookup failed.");
+            return 1;
+        }
+
+        string brokenCatalogPath = catalogPath + ".broken";
+        Dictionary<int, string> namesBeforeBrokenLoad = Kart.kartName;
+        Dictionary<string, System.Xml.XmlDocument> specsBeforeBrokenLoad = Kart.kartSpec;
+        int abilitiesBeforeBrokenLoad = KartCatalogAbilities.TotalRuleCount;
+        try
+        {
+            File.WriteAllText(
+                brokenCatalogPath,
+                "<KartCatalog formatVersion=\"2\"><Names>",
+                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            if (KartRhoFile.TryLoadKartCatalogXml(
+                    brokenCatalogPath,
+                    out _,
+                    out _,
+                    out _) ||
+                !ReferenceEquals(namesBeforeBrokenLoad, Kart.kartName) ||
+                !ReferenceEquals(specsBeforeBrokenLoad, Kart.kartSpec) ||
+                KartCatalogAbilities.TotalRuleCount != abilitiesBeforeBrokenLoad)
+            {
+                Console.Error.WriteLine(
+                    "P5136 broken catalog replaced an already published runtime catalog.");
+                return 1;
+            }
+        }
+        finally
+        {
+            if (File.Exists(brokenCatalogPath))
+            {
+                File.Delete(brokenCatalogPath);
+            }
+        }
+
+        Console.WriteLine(
+            $"P5136 read-only RHO/XML kart catalog passed: names={kartNameCount}, " +
+            $"specs={kartSpecCount}, kart1453={goldenChickenName}, kart1450={redLotusName}");
+    }
+    finally
+    {
+        if (!keepCatalogOutput && File.Exists(catalogPath))
+        {
+            File.Delete(catalogPath);
+        }
+    }
+}
+
+if (string.IsNullOrWhiteSpace(rhoCatalogTestRoot))
+{
+    string syntheticRoot = Path.Combine(
+        Path.GetTempPath(),
+        $"P5136-SyntheticCatalog-{Environment.ProcessId}-{Guid.NewGuid():N}");
+    string syntheticProfile = Path.Combine(syntheticRoot, "Profile");
+    string syntheticData = Path.Combine(syntheticRoot, "Data");
+    string syntheticCatalogPath = Path.Combine(syntheticProfile, "KartCatalog.xml");
+    string syntheticAaaPath = Path.Combine(syntheticData, "aaa.pk");
+    try
+    {
+        Directory.CreateDirectory(syntheticProfile);
+        Directory.CreateDirectory(syntheticData);
+        byte[] syntheticAaa = Encoding.ASCII.GetBytes("synthetic-p5136-aaa");
+        File.WriteAllBytes(syntheticAaaPath, syntheticAaa);
+        string syntheticAaaHash = Convert.ToHexString(
+            SHA256.HashData(syntheticAaa)).ToLowerInvariant();
+
+        string SyntheticKartName(int id) => id switch
+        {
+            1450 => "shurikenV1",
+            1453 => "chicken_goldV1",
+            _ => $"syntheticKart{id}"
+        };
+        XElement namesElement = new XElement(
+            "Names",
+            Enumerable.Range(1, 1456).Select(id => new XElement(
+                "Kart",
+                new XAttribute("id", id),
+                new XAttribute("name", SyntheticKartName(id)))));
+        XElement specsElement = new XElement(
+            "Specs",
+            Enumerable.Range(1, 1300)
+                .Concat(new[] { 1450, 1453 })
+                .Select(id => new XElement(
+                    "Spec",
+                    new XAttribute("name", SyntheticKartName(id)),
+                    new XElement(
+                        "BodyParam",
+                        id is 1450 or 1453
+                            ? new object[]
+                            {
+                                new XAttribute("ItemSlotCapacity", "3"),
+                                new XAttribute("SpecialSlotCapacity", "2")
+                            }
+                            : Array.Empty<object>()))));
+        XElement itemSymbolsElement = new XElement(
+            "ItemSymbols",
+            new XAttribute("resolution", "synthetic-verified"),
+            new XAttribute("total", 36),
+            new XElement("Item", new XAttribute("name", "goldEggMine"), new XAttribute("id", 83), new XAttribute("evidence", "synthetic")),
+            new XElement("Item", new XAttribute("name", "superMagnet"), new XAttribute("id", 103), new XAttribute("evidence", "synthetic")),
+            new XElement("Item", new XAttribute("name", "siren"), new XAttribute("id", 24), new XAttribute("evidence", "synthetic")),
+            Enumerable.Range(0, 33).Select(id => new XElement(
+                "Item",
+                new XAttribute("name", $"syntheticItem{id}"),
+                new XAttribute("id", 200 + id),
+                new XAttribute("evidence", "synthetic"))));
+        XElement transformAbilities = new XElement(
+            "TransformByKart",
+            new XElement(
+                "Rule",
+                new XAttribute("kartId", 1453),
+                new XAttribute("srcIdx", "banana"),
+                new XAttribute("dstIdx", "goldEggMine"),
+                new XAttribute("gitType", "no_flag"),
+                new XAttribute("probability", 100),
+                new XAttribute("sourceId", 8),
+                new XAttribute("targetId", 83)),
+            new XElement(
+                "Rule",
+                new XAttribute("kartId", 1453),
+                new XAttribute("srcIdx", "magnet"),
+                new XAttribute("dstIdx", "superMagnet"),
+                new XAttribute("gitType", "no_flag"),
+                new XAttribute("probability", 100),
+                new XAttribute("sourceId", 5),
+                new XAttribute("targetId", 103)),
+            Enumerable.Range(0, 696).Select(index => new XElement(
+                "Rule",
+                new XAttribute("kartId", 1 + index % 100),
+                new XAttribute("srcIdx", "banana"),
+                new XAttribute("dstIdx", "goldEggMine"),
+                new XAttribute("gitType", "no_flag"),
+                new XAttribute("probability", 100),
+                new XAttribute("sourceId", 8),
+                new XAttribute("targetId", 83))));
+        XElement firingAbilities = new XElement(
+            "FiringToGain",
+            new XElement(
+                "Rule",
+                new XAttribute("kartId", 1450),
+                new XAttribute("firingItemIdx", "magnet"),
+                new XAttribute("firingStep", 1),
+                new XAttribute("gainItemIdx", "siren"),
+                new XAttribute("probability", 100),
+                new XAttribute("sourceId", 5),
+                new XAttribute("targetId", 24)),
+            new XElement(
+                "Rule",
+                new XAttribute("kartId", 1450),
+                new XAttribute("firingItemIdx", "rocket"),
+                new XAttribute("firingStep", 1),
+                new XAttribute("gainItemIdx", "magnet"),
+                new XAttribute("probability", 33),
+                new XAttribute("sourceId", 7),
+                new XAttribute("targetId", 5)));
+        XDocument syntheticCatalog = new XDocument(
+            new XElement(
+                "KartCatalog",
+                new XAttribute("formatVersion", "2"),
+                new XAttribute("protocolVersion", "5136"),
+                new XAttribute("region", "kr"),
+                new XAttribute("sourceAaaSha256", syntheticAaaHash),
+                namesElement,
+                specsElement,
+                itemSymbolsElement,
+                new XElement(
+                    "Abilities",
+                    new XAttribute("numericResolution", "synthetic-verified"),
+                    new XAttribute("total", 700),
+                    new XAttribute("resolved", 700),
+                    transformAbilities,
+                    firingAbilities,
+                    new XElement("FiredToGain"))));
+        syntheticCatalog.Save(syntheticCatalogPath);
+
+        if (!KartRhoFile.TryLoadKartCatalogXml(
+                syntheticCatalogPath,
+                out int syntheticNames,
+                out int syntheticSpecs,
+                out string syntheticError) ||
+            syntheticNames != 1456 ||
+            syntheticSpecs != 1302 ||
+            KartCatalogAbilities.TotalRuleCount != 700)
+        {
+            Console.Error.WriteLine(
+                $"P5136 synthetic catalog load failed: {syntheticError}");
+            return 1;
+        }
+
+        Dictionary<int, string> publishedNames = Kart.kartName;
+        Dictionary<string, System.Xml.XmlDocument> publishedSpecs = Kart.kartSpec;
+        int publishedAbilities = KartCatalogAbilities.TotalRuleCount;
+        XDocument wrongProtocol = new XDocument(syntheticCatalog);
+        wrongProtocol.Root!.SetAttributeValue("protocolVersion", "9999");
+        string wrongProtocolPath = Path.Combine(syntheticProfile, "WrongProtocol.xml");
+        wrongProtocol.Save(wrongProtocolPath);
+        if (KartRhoFile.TryLoadKartCatalogXml(
+                wrongProtocolPath,
+                out _,
+                out _,
+                out _) ||
+            !ReferenceEquals(publishedNames, Kart.kartName) ||
+            !ReferenceEquals(publishedSpecs, Kart.kartSpec) ||
+            KartCatalogAbilities.TotalRuleCount != publishedAbilities)
+        {
+            Console.Error.WriteLine("P5136 wrong-protocol catalog was accepted.");
+            return 1;
+        }
+
+        XDocument incompleteCatalog = new XDocument(syntheticCatalog);
+        incompleteCatalog.Root!
+            .Element("Names")!
+            .Elements("Kart")
+            .Skip(10)
+            .Remove();
+        string incompleteCatalogPath = Path.Combine(syntheticProfile, "Incomplete.xml");
+        incompleteCatalog.Save(incompleteCatalogPath);
+        if (KartRhoFile.TryLoadKartCatalogXml(
+                incompleteCatalogPath,
+                out _,
+                out _,
+                out _) ||
+            !ReferenceEquals(publishedNames, Kart.kartName) ||
+            !ReferenceEquals(publishedSpecs, Kart.kartSpec) ||
+            KartCatalogAbilities.TotalRuleCount != publishedAbilities)
+        {
+            Console.Error.WriteLine("P5136 incomplete catalog was accepted.");
+            return 1;
+        }
+
+        File.WriteAllBytes(syntheticAaaPath, Encoding.ASCII.GetBytes("mismatched-aaa"));
+        if (KartRhoFile.TryLoadKartCatalogXml(
+                syntheticCatalogPath,
+                out _,
+                out _,
+                out _) ||
+            !ReferenceEquals(publishedNames, Kart.kartName) ||
+            !ReferenceEquals(publishedSpecs, Kart.kartSpec) ||
+            KartCatalogAbilities.TotalRuleCount != publishedAbilities)
+        {
+            Console.Error.WriteLine("P5136 mismatched catalog fingerprint was accepted.");
+            return 1;
+        }
+
+        Console.WriteLine(
+            "P5136 synthetic catalog schema/completeness/fingerprint smoke test passed.");
+    }
+    finally
+    {
+        if (Directory.Exists(syntheticRoot))
+        {
+            Directory.Delete(syntheticRoot, recursive: true);
+        }
+    }
+}
 
 string itemProbabilityTestRoot = Environment.GetEnvironmentVariable("P5136_ITEM_TEST_ROOT");
 if (!string.IsNullOrWhiteSpace(itemProbabilityTestRoot))
@@ -1668,15 +2116,36 @@ static bool RunRoomNameSpeedKeywordSmokeTests(out string failure)
 {
     (string RoomName, string Version, byte Speed, byte Infinite)[] cases =
     {
-        ("[S0] 느린 방", "国服", 3, byte.MaxValue),
+        ("[S0] 보통 방", "国服", 3, byte.MaxValue),
         ("s1 연습", "国服", 0, byte.MaxValue),
         ("빠른방-S2", "国服", 1, byte.MaxValue),
         ("S3_고속", "国服", 2, byte.MaxValue),
         ("[S4] 무한부스터", "国服", 4, 4),
         ("S6 진무한", "国服", 6, 6),
+        ("S7 통합 스피드", "国服", 7, byte.MaxValue),
+        ("S8 통합 아이템", "国服", 8, byte.MaxValue),
         ("KR-L2 클래식", "韩服复古", 3, byte.MaxValue),
         ("PRO 클래식", "国服复古", 5, byte.MaxValue)
     };
+
+    Dictionary<string, byte> currentSpeeds = SpeedType.speedNames["国服"];
+    byte[] expectedSpeedValues = { 3, 0, 1, 2, 4, 5, 6, 7, 8 };
+    for (int grade = 0; grade <= 8; grade++)
+    {
+        if (!currentSpeeds.TryGetValue($"S{grade}", out byte value) ||
+            value != expectedSpeedValues[grade])
+        {
+            failure = $"S{grade} dropdown mapping";
+            return false;
+        }
+    }
+
+    if (TrackRankData.GetSpeedTypeName(7) != "S7 통합 스피드" ||
+        TrackRankData.GetSpeedTypeName(8) != "S8 통합 아이템")
+    {
+        failure = "S7/S8 Korean display labels";
+        return false;
+    }
 
     foreach ((string roomName, string version, byte speed, byte infinite) in cases)
     {

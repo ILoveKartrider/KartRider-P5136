@@ -256,6 +256,9 @@ public class SpecialKartConfig
                 { 1484, new Dictionary<short, SkillMappingConfig> { {7, new SkillMappingConfig { TargetItemId = 32, Probability = 100 }}, {6, new SkillMappingConfig { TargetItemId = 31, Probability = 100 }} } },
                 { 1482, new Dictionary<short, SkillMappingConfig> { {5, new SkillMappingConfig { TargetItemId = 6, Probability = 100 }} } },
                 { 1481, new Dictionary<short, SkillMappingConfig> { {7, new SkillMappingConfig { TargetItemId = 102, Probability = 100 }}, {9, new SkillMappingConfig { TargetItemId = 34, Probability = 100 }} } },
+                // Korean 5136 Gold Chicken V1: banana -> gold egg mine,
+                // magnet -> super magnet. Item enum values are build-specific.
+                { 1453, new Dictionary<short, SkillMappingConfig> { {8, new SkillMappingConfig { TargetItemId = 83, Probability = 100 }}, {5, new SkillMappingConfig { TargetItemId = 103, Probability = 100 }} } },
                 { 1479, new Dictionary<short, SkillMappingConfig> { {7, new SkillMappingConfig { TargetItemId = 131, Probability = 100 }} } }
             },
 

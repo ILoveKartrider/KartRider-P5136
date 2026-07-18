@@ -131,7 +131,22 @@ public class SlotData
 
                     // Ensure profile is loaded before accessing
                     var parentConfig2 = ProfileService.GetProfileConfig(Parent.Client.Nickname);
-                    if (kartConfig.SkillMappings.TryGetValue(parentConfig2.RiderItem.Set_Kart, out var kartSkills2))
+                    bool catalogHandled = KartCatalogAbilities.TryGetFiringToGain(
+                        parentConfig2.RiderItem.Set_Kart,
+                        skill,
+                        firingStep: 1,
+                        ResolveCatalogGameType(room.GameType),
+                        out KartCatalogAbilityRule catalogRule);
+                    if (catalogHandled)
+                    {
+                        AddItemSkill(
+                            roomId,
+                            id,
+                            Parent,
+                            catalogRule.TargetItemId!.Value,
+                            catalogRule.Probability!.Value);
+                    }
+                    else if (kartConfig.SkillMappings.TryGetValue(parentConfig2.RiderItem.Set_Kart, out var kartSkills2))
                     {
                         if (kartSkills2.TryGetValue(skill, out var skillConfig2))
                         {
@@ -160,7 +175,23 @@ public class SlotData
 
                 // Ensure profile is loaded before accessing
                 var parentConfig = ProfileService.GetProfileConfig(Parent.Client.Nickname);
-                if (kartConfig.SkillAttacked.TryGetValue(parentConfig.RiderItem.Set_Kart, out var kartSkills))
+                bool catalogHandled = KartCatalogAbilities.TryGetFiredToGain(
+                    parentConfig.RiderItem.Set_Kart,
+                    skill,
+                    ResolveCatalogGameType(room.GameType),
+                    out KartCatalogAbilityRule catalogRule);
+                if (catalogHandled)
+                {
+                    AttackedSkill(
+                        roomId,
+                        id,
+                        Parent,
+                        type,
+                        uni,
+                        catalogRule.TargetItemId!.Value,
+                        catalogRule.Probability!.Value);
+                }
+                else if (kartConfig.SkillAttacked.TryGetValue(parentConfig.RiderItem.Set_Kart, out var kartSkills))
                 {
                     if (kartSkills.TryGetValue(skill, out var skillConfig))
                     {
@@ -204,12 +235,12 @@ public class SlotData
                 teamMode: gameType == 4,
                 liveRank,
                 racerCount);
-            return GetItemSkill(Nickname, skill);
+            return GetItemSkill(Nickname, skill, gameType);
         }
         return 0;
     }
 
-    public static short GetItemSkill(string Nickname, short skill)
+    public static short GetItemSkill(string Nickname, short skill, byte? gameType = null)
     {
         var kartConfig = SpecialKartConfig.LoadConfigFromFile(FileName.SpecialKartConfig);
         List<short> skills = V2Specs.GetSkills(Nickname);
@@ -222,6 +253,36 @@ public class SlotData
             }
         }
         var slotConfig = ProfileService.GetProfileConfig(Nickname);
+        if (KartCatalogAbilities.TryGetTransform(
+                slotConfig.RiderItem.Set_Kart,
+                skill,
+                ResolveCatalogTransformMode(gameType),
+                out KartCatalogAbilityRule catalogRule))
+        {
+            if (catalogRule.Probability!.Value >= 100 ||
+                _random.Next(100) < catalogRule.Probability.Value)
+            {
+                Console.WriteLine(
+                    "[Catalog SkillChange] player={0}; kart={1}; item={2}->{3}; probability={4}%",
+                    Nickname,
+                    slotConfig.RiderItem.Set_Kart,
+                    skill,
+                    catalogRule.TargetItemId!.Value,
+                    catalogRule.Probability.Value);
+                return catalogRule.TargetItemId.Value;
+            }
+            return skill;
+        }
+        if (KartCatalogAbilities.HasTransformDefinition(
+                slotConfig.RiderItem.Set_Kart,
+                skill))
+        {
+            // The XML has a rule for this kart/item, but not for the current
+            // mode (for example, a no_flag-only rule in a flag room).  Do not
+            // let the generic JSON fallback override that explicit absence.
+            return skill;
+        }
+
         if (kartConfig.SkillChange.TryGetValue(slotConfig.RiderItem.Set_Kart, out var changes) &&
             changes.TryGetValue(skill, out var skillConfig))
         {
@@ -239,6 +300,26 @@ public class SlotData
         return skill;
     }
 
+    private static string ResolveCatalogGameType(byte gameType)
+    {
+        return gameType switch
+        {
+            14 => "FlagIndi",
+            54 => "FlagTeam",
+            _ => string.Empty
+        };
+    }
+
+    private static string ResolveCatalogTransformMode(byte? gameType)
+    {
+        return gameType switch
+        {
+            14 => "FlagIndi",
+            54 => "FlagTeam",
+            _ => "no_flag"
+        };
+    }
+
     public static void AddItemSkill(int roomId, int id, SessionGroup Parent, short skill, byte probability = 100)
     {
         // 概率判断：不触发时直接返回，不发送数据包
@@ -248,7 +329,10 @@ public class SlotData
             return;
         }
 
-        skill = GetItemSkill(Parent.Client.Nickname, skill);
+        skill = GetItemSkill(
+            Parent.Client.Nickname,
+            skill,
+            RoomManager.GetRoom(roomId)?.GameType);
         using (OutPacket oPacket = new OutPacket("GameSlotPacket"))
         {
             oPacket.WriteInt(id);
@@ -279,7 +363,10 @@ public class SlotData
             return;
         }
 
-        skill = GetItemSkill(Parent.Client.Nickname, skill);
+        skill = GetItemSkill(
+            Parent.Client.Nickname,
+            skill,
+            RoomManager.GetRoom(roomId)?.GameType);
         using (OutPacket oPacket = new OutPacket("GameSlotPacket"))
         {
             oPacket.WriteInt(id);

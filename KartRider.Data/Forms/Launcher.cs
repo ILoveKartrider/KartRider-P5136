@@ -29,6 +29,7 @@ namespace KartRider
         private readonly Button stopServerButton = new Button();
         private readonly Button gameSettingsButton = new Button();
         private readonly Button itemProbabilityButton = new Button();
+        private readonly Button extractKartCatalogButton = new Button();
         private readonly Button saveLogButton = new Button();
         private readonly Label statusLabel = new Label();
         private readonly Label buildValueLabel = new Label();
@@ -211,6 +212,10 @@ namespace KartRider
                 itemProbabilityButton,
                 "아이템 확률",
                 ItemProbabilityButton_Click);
+            ConfigureActionButton(
+                extractKartCatalogButton,
+                "카트 데이터 XML 추출",
+                ExtractKartCatalogButton_Click);
             ConfigureActionButton(saveLogButton, "현재 로그 저장", SaveLogButton_Click);
             statusLabel.AutoSize = true;
             statusLabel.Margin = new Padding(16, 11, 0, 0);
@@ -221,6 +226,7 @@ namespace KartRider
                 stopServerButton,
                 gameSettingsButton,
                 itemProbabilityButton,
+                extractKartCatalogButton,
                 saveLogButton,
                 statusLabel
             });
@@ -386,6 +392,17 @@ namespace KartRider
             }
 
             RefreshServerStatus();
+
+            if (File.Exists(FileName.KartCatalog_LoadFile))
+            {
+                AppendLog($"카트 데이터 XML 준비됨: {FileName.KartCatalog_LoadFile}");
+            }
+            else
+            {
+                AppendLog(
+                    "카트 데이터 XML이 없습니다. 서버 시작 전에 " +
+                    "'카트 데이터 XML 추출'을 눌러 생성하세요.");
+            }
         }
 
         public void RefreshServerStatus()
@@ -415,6 +432,7 @@ namespace KartRider
             stopServerButton.Enabled = !serverBusy && hasResources;
             gameSettingsButton.Enabled = !serverBusy;
             itemProbabilityButton.Enabled = canEdit;
+            extractKartCatalogButton.Enabled = canEdit;
             saveLogButton.Enabled = !serverBusy;
             RefreshWindowTitle();
         }
@@ -508,6 +526,33 @@ namespace KartRider
             RefreshServerStatus();
             try
             {
+                var catalogLoad = await Task.Run(() =>
+                {
+                    bool loaded = KartRhoFile.TryLoadKartCatalogXml(
+                        FileName.KartCatalog_LoadFile,
+                        out int nameCount,
+                        out int specCount,
+                        out string error);
+                    return (
+                        loaded,
+                        nameCount,
+                        specCount,
+                        abilityCount: KartCatalogAbilities.TotalRuleCount,
+                        resolvedAbilityCount: KartCatalogAbilities.ResolvedRuleCount,
+                        error);
+                });
+                if (!catalogLoad.loaded)
+                {
+                    throw new InvalidDataException(
+                        "카트 데이터 XML을 불러올 수 없습니다. 서버를 시작하기 전에 " +
+                        "'카트 데이터 XML 추출'을 눌러 다시 생성하세요.\n\n" +
+                        $"{catalogLoad.error}\n{FileName.KartCatalog_LoadFile}");
+                }
+                AppendLog(
+                    $"카트 데이터 XML 로드: 카트 {catalogLoad.nameCount}개, " +
+                    $"스펙 {catalogLoad.specCount}개, " +
+                    $"능력 {catalogLoad.resolvedAbilityCount}/{catalogLoad.abilityCount}개 해석");
+
                 await Task.Run(() => ClientServerRuntime.Start(kartRiderDirectory, options));
                 if (!ClientServerRuntime.IsRunning)
                 {
@@ -603,6 +648,100 @@ namespace KartRider
                 AppendLog(
                     $"아이템 확률 설정 저장: {mode}, " +
                     $"순위 기준={itemProbabilityConfiguration.RankBand}");
+            }
+        }
+
+        private async void ExtractKartCatalogButton_Click(object sender, EventArgs e)
+        {
+            if (serverBusy || ClientServerRuntime.HasResources)
+            {
+                return;
+            }
+
+            activeServerOperation = ExtractKartCatalogAsync();
+            await activeServerOperation;
+        }
+
+        private async Task ExtractKartCatalogAsync()
+        {
+            serverBusy = true;
+            string originalButtonText = extractKartCatalogButton.Text;
+            extractKartCatalogButton.Text = "카트 데이터 추출 중...";
+            RefreshServerStatus();
+            AppendLog("클라이언트 RHO에서 카트 데이터 XML 추출을 시작합니다.");
+
+            try
+            {
+                string gameDirectory = string.IsNullOrWhiteSpace(kartRiderDirectory)
+                    ? FileName.appDir
+                    : kartRiderDirectory;
+                string aaaPkPath = Path.Combine(gameDirectory, "Data", "aaa.pk");
+                string outputPath = FileName.KartCatalog_LoadFile;
+
+                var result = await Task.Run(() =>
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
+                    if (!KartRhoFile.TryExportKartCatalogXmlReadOnly(
+                            aaaPkPath,
+                            outputPath,
+                            out int exportedNames,
+                            out int exportedSpecs,
+                            out string exportError))
+                    {
+                        throw new InvalidDataException(exportError);
+                    }
+
+                    if (!KartRhoFile.TryLoadKartCatalogXml(
+                            outputPath,
+                            out int loadedNames,
+                            out int loadedSpecs,
+                            out string loadError))
+                    {
+                        throw new InvalidDataException(
+                            $"XML 파일은 생성했지만 다시 불러오지 못했습니다: {loadError}");
+                    }
+
+                    return (
+                        exportedNames,
+                        exportedSpecs,
+                        loadedNames,
+                        loadedSpecs,
+                        abilityCount: KartCatalogAbilities.TotalRuleCount,
+                        resolvedAbilityCount: KartCatalogAbilities.ResolvedRuleCount);
+                });
+
+                string fullOutputPath = Path.GetFullPath(outputPath);
+                AppendLog(
+                    $"카트 데이터 XML 추출 완료: 카트 {result.exportedNames}개, " +
+                    $"스펙 {result.exportedSpecs}개, 로드 {result.loadedNames}/{result.loadedSpecs}개, " +
+                    $"능력 {result.resolvedAbilityCount}/{result.abilityCount}개 해석, " +
+                    $"경로={fullOutputPath}");
+                MessageBox.Show(
+                    this,
+                    $"카트 데이터 XML을 생성하고 즉시 불러왔습니다.\n\n" +
+                    $"카트 이름: {result.exportedNames}개\n" +
+                    $"카트 스펙: {result.exportedSpecs}개\n" +
+                    $"카트 능력: {result.resolvedAbilityCount}/{result.abilityCount}개 해석\n" +
+                    $"저장 경로: {fullOutputPath}",
+                    "카트 데이터 추출 완료",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+            }
+            catch (Exception exception)
+            {
+                ShowError(
+                    "카트 데이터 XML 추출 실패",
+                    new InvalidOperationException(
+                        "클라이언트 Data 폴더와 RHO 파일을 확인하세요. " +
+                        "기존 KartCatalog.xml은 성공적으로 교체되기 전까지 유지됩니다.\n\n" +
+                        exception.Message,
+                        exception));
+            }
+            finally
+            {
+                extractKartCatalogButton.Text = originalButtonText;
+                serverBusy = false;
+                RefreshServerStatus();
             }
         }
 
