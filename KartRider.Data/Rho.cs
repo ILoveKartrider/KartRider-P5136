@@ -25,13 +25,65 @@ namespace KartRider
 {
     public static class KartRhoFile
     {
-        private const string KartCatalogFormatVersion = "2";
+        private const string KartCatalogFormatVersion = "3";
         private const string KartCatalogProtocolVersion = "5136";
         private const string KartCatalogRegion = "kr";
         private const int MinimumKartCatalogNames = 1400;
         private const int MinimumKartCatalogSpecs = 1300;
         private const int MinimumKartCatalogAbilities = 700;
         private const int MinimumResolvedKartCatalogAbilities = 250;
+        private const int MinimumKartCatalogInventoryItems = 6800;
+        private const int MinimumKartCatalogInventoryCategories = 60;
+        private const int MinimumKartCatalogInventoryKarts = 1200;
+        private const int MinimumKartCatalogGrantItems = 5250;
+        private const int MinimumKartCatalogGrantCategories = 41;
+
+        // Numeric ids recovered once from the Korean 5136 item initializers.
+        // Catalog generation must not depend on distributing or retaining an
+        // unpacked executable, so these verified mappings are part of the
+        // protocol profile.  KartRiderU.exe, when present, is only used to
+        // cross-check the table and detect a mismatched client build.
+        private static readonly (string Name, short ItemId)[]
+            Korean5136ExecutableItemSymbols =
+        {
+            ("animalBooster", 31),
+            ("bigBanana", 85),
+            ("blockRocket", 117),
+            ("candyRocket", 102),
+            ("cokeBomb", 20),
+            ("cokeRocket", 30),
+            ("cokeRocketWorldCup", 39),
+            ("darkCloud", 1),
+            ("darkCloud2", 115),
+            ("dinoClawRocket", 108),
+            ("dinoEggRocket", 107),
+            ("drrMine", 23),
+            ("duckMine", 45),
+            ("eggMine", 82),
+            ("foxTailRocket", 126),
+            ("goldRocket", 32),
+            ("goldShield", 36),
+            ("infectedBomb", 27),
+            ("infectedWaterFly", 119),
+            ("lockdownRocket", 104),
+            ("prisonBomb", 47),
+            ("protectShield", 81),
+            ("pumpkinBomb", 44),
+            ("rainbowCloud", 43),
+            ("rollingCokeBomb", 22),
+            ("rollingInfectedBomb", 29),
+            ("sirenShield", 106),
+            ("snowBomb", 34),
+            ("snowWaterFly", 118),
+            ("snowman", 112),
+            ("tigerGhost", 101),
+            ("tigerRocket", 99),
+            ("timeCokeBomb", 21),
+            ("timeInfectedBomb", 28),
+            ("timeSnowBomb", 35),
+            ("waterMine", 37),
+            ("waterbombFly", 120)
+        };
 
         public static string regionCode = "cn";
 
@@ -898,6 +950,7 @@ namespace KartRider
                     out Dictionary<string, XmlDocument> extractedSpecs,
                     out List<KartCatalogAbilityRule> extractedAbilities,
                     out List<KartCatalogItemSymbol> extractedItemSymbols,
+                    out List<KartCatalogInventoryItem> extractedInventory,
                     out string extractedRegion,
                     out string extractedSourcePath,
                     out error))
@@ -930,6 +983,7 @@ namespace KartRider
                 }
                 XElement itemSymbolsElement = CreateItemSymbolsXml(extractedItemSymbols);
                 XElement abilitiesElement = CreateAbilitiesXml(extractedAbilities);
+                XElement inventoryElement = CreateInventoryXml(extractedInventory);
                 string unpackedExecutablePath = ResolveUnpackedExecutablePath(
                     Path.GetDirectoryName(extractedSourcePath)
                         ?? throw new InvalidDataException("aaa.pk has no parent directory"));
@@ -947,6 +1001,7 @@ namespace KartRider
                     executableHashAttribute,
                     namesElement,
                     specsElement,
+                    inventoryElement,
                     itemSymbolsElement,
                     abilitiesElement);
 
@@ -998,6 +1053,7 @@ namespace KartRider
                 specs = extractedSpecs.Count;
                 Console.WriteLine(
                     $"[RHO kart catalog] XML exported: names={names}, specs={specs}, " +
+                    $"inventory={extractedInventory.Count}/{extractedInventory.Select(item => item.Category).Distinct().Count()} categories, " +
                     $"abilities={extractedAbilities.Count}/" +
                     $"{extractedAbilities.Count(rule => rule.IsRuntimeResolved)} resolved, " +
                     $"path={fullOutputPath}");
@@ -1046,7 +1102,7 @@ namespace KartRider
                     root.Attribute("region")?.Value != KartCatalogRegion)
                 {
                     throw new InvalidDataException(
-                        "kart catalog is not a Korean protocol 5136 format-2 catalog");
+                        $"kart catalog is not a Korean protocol 5136 format-{KartCatalogFormatVersion} catalog");
                 }
                 ValidateCatalogSourceFingerprints(root, fullPath);
 
@@ -1091,6 +1147,7 @@ namespace KartRider
 
                 Dictionary<string, KartCatalogItemSymbol> loadedItemSymbols =
                     ParseItemSymbolsXml(root);
+                List<KartCatalogInventoryItem> loadedInventory = ParseInventoryXml(root);
                 List<KartCatalogAbilityRule> loadedAbilities = ParseAbilitiesXml(
                     root,
                     loadedItemSymbols);
@@ -1098,6 +1155,7 @@ namespace KartRider
                     root.Attribute("region")!.Value,
                     loadedNames,
                     loadedSpecs,
+                    loadedInventory,
                     loadedItemSymbols.Values,
                     loadedAbilities);
 
@@ -1105,6 +1163,7 @@ namespace KartRider
                 // local XML cannot erase the catalog already in use.
                 Kart.kartName = loadedNames;
                 Kart.kartSpec = loadedSpecs;
+                KartCatalogInventory.Publish(loadedInventory);
                 KartCatalogAbilities.Publish(loadedAbilities);
                 regionCode = KartCatalogRegion;
 
@@ -1112,7 +1171,9 @@ namespace KartRider
                 specs = loadedSpecs.Count;
                 Console.WriteLine(
                     $"[RHO kart catalog] XML loaded: region={regionCode}, names={names}, " +
-                    $"specs={specs}, abilities={KartCatalogAbilities.TotalRuleCount}/" +
+                    $"specs={specs}, inventory={KartCatalogInventory.TotalItemCount}/" +
+                    $"{KartCatalogInventory.CategoryCount} categories, " +
+                    $"abilities={KartCatalogAbilities.TotalRuleCount}/" +
                     $"{KartCatalogAbilities.ResolvedRuleCount} resolved, path={fullPath}");
                 return true;
             }
@@ -1135,6 +1196,7 @@ namespace KartRider
             out Dictionary<string, XmlDocument> extractedSpecs,
             out List<KartCatalogAbilityRule> extractedAbilities,
             out List<KartCatalogItemSymbol> extractedItemSymbols,
+            out List<KartCatalogInventoryItem> extractedInventory,
             out string extractedRegion,
             out string sourcePath,
             out string error)
@@ -1143,6 +1205,7 @@ namespace KartRider
             extractedSpecs = new Dictionary<string, XmlDocument>(StringComparer.OrdinalIgnoreCase);
             extractedAbilities = new List<KartCatalogAbilityRule>();
             extractedItemSymbols = new List<KartCatalogItemSymbol>();
+            extractedInventory = new List<KartCatalogInventoryItem>();
             extractedRegion = string.Empty;
             sourcePath = string.Empty;
             error = string.Empty;
@@ -1173,6 +1236,7 @@ namespace KartRider
 
                 var nameCandidates = new List<(int Priority, string Path, byte[] Data)>();
                 var specCandidates = new List<(int Priority, string KartName, string Path, byte[] Data)>();
+                var inventoryCandidates = new List<(string Archive, string Path, byte[] Data)>();
                 Queue<PackFolderInfo> folders = new Queue<PackFolderInfo>();
                 folders.Enqueue(packFolderManager.GetRootFolder());
 
@@ -1235,7 +1299,10 @@ namespace KartRider
                                 catalogRegion,
                                 out string kartName,
                                 out int specPriority);
-                            if (itemTablePriority <= 0 && !isKartParam)
+                            bool isInventory = path.Equals(
+                                $"zeta_/{catalogRegion}/shop/data/item.kml",
+                                StringComparison.OrdinalIgnoreCase);
+                            if (itemTablePriority <= 0 && !isKartParam && !isInventory)
                             {
                                 continue;
                             }
@@ -1250,6 +1317,10 @@ namespace KartRider
                                 if (isKartParam)
                                 {
                                     specCandidates.Add((specPriority, kartName, path, data));
+                                }
+                                if (isInventory)
+                                {
+                                    inventoryCandidates.Add((Path.GetFileName(rho5Path), path, data));
                                 }
                             }
                             catch (Exception ex)
@@ -1359,17 +1430,24 @@ namespace KartRider
                     extractedSpecs[entry.Key] = entry.Value.Document;
                 }
 
+                extractedInventory.AddRange(ExtractCatalogInventory(
+                    inventoryCandidates,
+                    extractedNames));
+
                 extractedRegion = catalogRegion;
                 ValidateKartCatalogContents(
                     extractedRegion,
                     extractedNames,
                     extractedSpecs,
+                    extractedInventory,
                     extractedItemSymbols,
                     extractedAbilities);
                 stopwatch.Stop();
                 Console.WriteLine(
                     $"[RHO kart catalog] extracted read-only: region={catalogRegion}, " +
                     $"names={extractedNames.Count}, specs={extractedSpecs.Count}, " +
+                    $"inventory={extractedInventory.Count}/" +
+                    $"{extractedInventory.Select(item => item.Category).Distinct().Count()} categories, " +
                     $"abilities={extractedAbilities.Count}/" +
                     $"{extractedAbilities.Count(rule => rule.IsRuntimeResolved)} resolved, " +
                     $"elapsed={stopwatch.ElapsedMilliseconds}ms, source={fullPath}");
@@ -1388,6 +1466,75 @@ namespace KartRider
                 // server only needs detached strings/XmlDocuments after startup.
                 packFolderManager?.Reset();
             }
+        }
+
+        private static List<KartCatalogInventoryItem> ExtractCatalogInventory(
+            IReadOnlyList<(string Archive, string Path, byte[] Data)> candidates,
+            IReadOnlyDictionary<int, string> names)
+        {
+            if (candidates == null || candidates.Count == 0)
+            {
+                throw new InvalidDataException(
+                    "P5136 shop inventory zeta_/kr/shop/data/item.kml was not found in RHO5");
+            }
+
+            (string Archive, string Path, byte[] Data) selected = candidates[candidates.Count - 1];
+            byte[] xml = GetCatalogXml(selected.Path, selected.Data);
+            XmlDocument document = LoadCatalogXmlDocument(xml);
+            XmlNodeList nodes = document.GetElementsByTagName("item");
+            var items = new Dictionary<(ushort Category, ushort Id), KartCatalogInventoryItem>();
+            foreach (XmlNode node in nodes)
+            {
+                if (node is not XmlElement element ||
+                    !ushort.TryParse(
+                        element.GetAttribute("itemCatId"),
+                        NumberStyles.Integer,
+                        CultureInfo.InvariantCulture,
+                        out ushort category) ||
+                    !ushort.TryParse(
+                        element.GetAttribute("itemId"),
+                        NumberStyles.Integer,
+                        CultureInfo.InvariantCulture,
+                        out ushort id) ||
+                    id == 0)
+                {
+                    throw new InvalidDataException(
+                        $"shop inventory contains an invalid item row in {selected.Path}");
+                }
+
+                // The shop table is the ownership authority.  Every P5136 shop
+                // kart must at least resolve through the client kart-name table;
+                // four legitimate shop karts have no BodyParam and intentionally
+                // use the existing physics fallback when selected.
+                if (category == 3 && !names.ContainsKey(id))
+                {
+                    throw new InvalidDataException(
+                        $"shop inventory kart {id} is missing from the kart-name table");
+                }
+
+                var item = new KartCatalogInventoryItem
+                {
+                    Category = category,
+                    Id = id,
+                    Serial = 0,
+                    Name = element.GetAttribute("itemName") ?? string.Empty
+                };
+                if (!items.TryAdd((category, id), item))
+                {
+                    throw new InvalidDataException(
+                        $"shop inventory contains duplicate item {category}:{id}");
+                }
+            }
+
+            List<KartCatalogInventoryItem> result = items.Values
+                .OrderBy(item => item.Category)
+                .ThenBy(item => item.Id)
+                .ToList();
+            Console.WriteLine(
+                $"[RHO kart catalog] shop inventory selected: archive={selected.Archive}, " +
+                $"items={result.Count}, categories={result.Select(item => item.Category).Distinct().Count()}, " +
+                $"karts={result.Count(item => item.Category == 3)}");
+            return result;
         }
 
         private static List<KartCatalogAbilityRule> ExtractKartAbilityRules(
@@ -1483,6 +1630,14 @@ namespace KartRider
             AddVerifiedItemSymbol(symbolByName, "goldEggMine", 83, "P5136 verified supplement");
             AddVerifiedItemSymbol(symbolByName, "superMagnet", 103, "P5136 verified supplement");
             AddVerifiedItemSymbol(symbolByName, "siren", 24, "P5136 verified supplement");
+            foreach ((string name, short itemId) in Korean5136ExecutableItemSymbols)
+            {
+                AddVerifiedItemSymbol(
+                    symbolByName,
+                    name,
+                    itemId,
+                    "P5136 verified executable supplement");
+            }
             var merged = new Dictionary<string, (
                 int Priority,
                 KartCatalogAbilityKind Kind,
@@ -1536,7 +1691,7 @@ namespace KartRider
                     "KartRiderU.exe verified item initializer");
             }
             Console.WriteLine(
-                $"[RHO kart catalog] executable item symbols: " +
+                $"[RHO kart catalog] optional executable item-symbol verification: " +
                 $"resolved={executableSymbols.ResolvedCount}/{executableSymbols.RequestedCount}, " +
                 $"path={unpackedExecutablePath}" +
                 (string.IsNullOrWhiteSpace(executableSymbols.Error)
@@ -1638,6 +1793,37 @@ namespace KartRider
                 : string.Empty;
         }
 
+        private static XElement CreateInventoryXml(
+            IEnumerable<KartCatalogInventoryItem> items)
+        {
+            KartCatalogInventoryItem[] ordered = items
+                .OrderBy(item => item.Category)
+                .ThenBy(item => item.Id)
+                .ToArray();
+            return new XElement(
+                "Inventory",
+                new XAttribute("total", ordered.Length),
+                new XAttribute(
+                    "categories",
+                    ordered.Select(item => item.Category).Distinct().Count()),
+                ordered.Select(item =>
+                {
+                    XElement element = new XElement(
+                        "Item",
+                        new XAttribute("category", item.Category),
+                        new XAttribute("id", item.Id));
+                    if (item.Serial != 0)
+                    {
+                        element.Add(new XAttribute("serial", item.Serial));
+                    }
+                    if (!string.IsNullOrWhiteSpace(item.Name))
+                    {
+                        element.Add(new XAttribute("name", item.Name));
+                    }
+                    return element;
+                }));
+        }
+
         private static XElement CreateItemSymbolsXml(
             IEnumerable<KartCatalogItemSymbol> symbols)
         {
@@ -1694,6 +1880,83 @@ namespace KartRider
                 abilities.Add(group);
             }
             return abilities;
+        }
+
+        private static List<KartCatalogInventoryItem> ParseInventoryXml(
+            XElement catalogRoot)
+        {
+            XElement inventory = catalogRoot.Element("Inventory")
+                ?? throw new InvalidDataException("kart catalog XML has no Inventory element");
+            var items = new List<KartCatalogInventoryItem>();
+            var keys = new HashSet<(ushort Category, ushort Id)>();
+            foreach (XElement element in inventory.Elements("Item"))
+            {
+                if (!ushort.TryParse(
+                        element.Attribute("category")?.Value,
+                        NumberStyles.Integer,
+                        CultureInfo.InvariantCulture,
+                        out ushort category) ||
+                    !ushort.TryParse(
+                        element.Attribute("id")?.Value,
+                        NumberStyles.Integer,
+                        CultureInfo.InvariantCulture,
+                        out ushort id) ||
+                    id == 0)
+                {
+                    throw new InvalidDataException(
+                        "kart catalog XML has an invalid inventory item");
+                }
+
+                ushort serial = 0;
+                string serialText = element.Attribute("serial")?.Value;
+                if (!string.IsNullOrWhiteSpace(serialText) &&
+                    !ushort.TryParse(
+                        serialText,
+                        NumberStyles.Integer,
+                        CultureInfo.InvariantCulture,
+                        out serial))
+                {
+                    throw new InvalidDataException(
+                        $"kart catalog XML has an invalid inventory serial for {category}:{id}");
+                }
+                if (!keys.Add((category, id)))
+                {
+                    throw new InvalidDataException(
+                        $"kart catalog XML has duplicate inventory item {category}:{id}");
+                }
+
+                items.Add(new KartCatalogInventoryItem
+                {
+                    Category = category,
+                    Id = id,
+                    Serial = serial,
+                    Name = element.Attribute("name")?.Value ?? string.Empty
+                });
+            }
+
+            if (!int.TryParse(
+                    inventory.Attribute("total")?.Value,
+                    NumberStyles.Integer,
+                    CultureInfo.InvariantCulture,
+                    out int declaredTotal) ||
+                declaredTotal != items.Count)
+            {
+                throw new InvalidDataException(
+                    $"kart catalog inventory count mismatch ({declaredTotal} declared, {items.Count} read)");
+            }
+            int categoryCount = items.Select(item => item.Category).Distinct().Count();
+            if (!int.TryParse(
+                    inventory.Attribute("categories")?.Value,
+                    NumberStyles.Integer,
+                    CultureInfo.InvariantCulture,
+                    out int declaredCategories) ||
+                declaredCategories != categoryCount)
+            {
+                throw new InvalidDataException(
+                    $"kart catalog inventory category count mismatch " +
+                    $"({declaredCategories} declared, {categoryCount} read)");
+            }
+            return items;
         }
 
         private static Dictionary<string, KartCatalogItemSymbol> ParseItemSymbolsXml(
@@ -1997,6 +2260,7 @@ namespace KartRider
             string catalogRegion,
             IReadOnlyDictionary<int, string> names,
             IReadOnlyDictionary<string, XmlDocument> specs,
+            IReadOnlyCollection<KartCatalogInventoryItem> inventory,
             IEnumerable<KartCatalogItemSymbol> itemSymbols,
             IReadOnlyCollection<KartCatalogAbilityRule> abilities)
         {
@@ -2021,6 +2285,42 @@ namespace KartRider
 
             ValidateCatalogKartSlots(specs, redLotusName, 1450);
             ValidateCatalogKartSlots(specs, goldenChickenName, 1453);
+
+            KartCatalogInventoryItem[] inventoryItems = inventory?.ToArray()
+                ?? Array.Empty<KartCatalogInventoryItem>();
+            int inventoryCategories = inventoryItems
+                .Select(item => item.Category)
+                .Distinct()
+                .Count();
+            int inventoryKarts = inventoryItems.Count(item => item.Category == 3);
+            KartCatalogInventoryItem[] grantItems = inventoryItems
+                .Where(item => KartCatalogInventory.IsGrantCategory(item.Category))
+                .ToArray();
+            int grantCategories = grantItems
+                .Select(item => item.Category)
+                .Distinct()
+                .Count();
+            int duplicateInventoryKeys = inventoryItems
+                .GroupBy(item => (item.Category, item.Id))
+                .Count(group => group.Count() > 1);
+            if (inventoryItems.Length < MinimumKartCatalogInventoryItems ||
+                inventoryCategories < MinimumKartCatalogInventoryCategories ||
+                inventoryKarts < MinimumKartCatalogInventoryKarts ||
+                grantItems.Length < MinimumKartCatalogGrantItems ||
+                grantCategories < MinimumKartCatalogGrantCategories ||
+                duplicateInventoryKeys != 0 ||
+                inventoryItems.Any(item => item.Id == 0) ||
+                inventoryItems.Any(item =>
+                    item.Category == 3 && !names.ContainsKey(item.Id)) ||
+                !inventoryItems.Any(item => item.Category == 3 && item.Id == 1450) ||
+                !inventoryItems.Any(item => item.Category == 3 && item.Id == 1453))
+            {
+                throw new InvalidDataException(
+                    $"incomplete P5136 inventory catalog (items={inventoryItems.Length}, " +
+                    $"categories={inventoryCategories}, karts={inventoryKarts}, " +
+                    $"grant={grantItems.Length}/{grantCategories} categories, " +
+                    $"duplicates={duplicateInventoryKeys})");
+            }
 
             KartCatalogItemSymbol[] symbols = itemSymbols?.ToArray()
                 ?? Array.Empty<KartCatalogItemSymbol>();

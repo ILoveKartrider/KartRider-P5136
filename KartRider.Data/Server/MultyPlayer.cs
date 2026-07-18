@@ -1991,7 +1991,13 @@ public static class MultyPlayer
             }
             else
             {
-                StartGameData.GetKartSpac(oPacket, p.Nickname, room.SpeedType, KartID, FlyingPetID);
+                StartGameData.GetKartSpac(
+                    oPacket,
+                    p.Nickname,
+                    room.SpeedType,
+                    KartID,
+                    FlyingPetID,
+                    Korean5136PlantPerformance.FromRoomGameType(room.GameType));
             }
 
             oPacket.WriteInt(room.GetAiCount()); //AI count

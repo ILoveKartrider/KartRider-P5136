@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Xml;
 
 namespace KartRider.Compatibility;
@@ -21,12 +22,23 @@ internal static class Korean5136Inventory
 {
     private const int ItemChunkSize = 100;
     private const int ExcDataChunkSize = 100;
+    private static readonly ushort[] PrePartsCategoryOrder =
+    {
+        21, 52, 1, 32, 16, 11, 8, 9, 61, 7, 28, 22, 23, 12, 13, 18,
+        20, 4, 31, 27, 26, 70, 2, 30, 36, 55, 59, 43, 44, 45, 46, 37,
+        38, 49, 53, 39
+    };
+    private static readonly ushort[] PostPartsCategoryOrder = { 68, 69, 67, 14, 3 };
+    private static readonly HashSet<ushort> UnitAmountCategories = new HashSet<ushort>
+    {
+        1, 2, 3, 4, 8, 11, 12, 14, 16, 18, 20, 21, 26, 27, 28, 30,
+        31, 32, 52, 61, 70
+    };
 
     internal static void Send(SessionGroup parent, string nickname)
     {
         var config = ProfileService.GetProfileConfig(nickname);
         InventoryPlan plan;
-        string status = "full";
 
         try
         {
@@ -37,7 +49,6 @@ internal static class Korean5136Inventory
         }
         catch (Exception exception)
         {
-            status = $"fallback:{exception.GetType().Name}";
             PacketTrace.LogEvent(
                 "TCP",
                 "P5136-INVENTORY-BUILD-ERROR",
@@ -45,7 +56,9 @@ internal static class Korean5136Inventory
                 parent.Client.GetRemoteEndPoint(),
                 nickname,
                 exception.Message);
-            plan = BuildEquippedFallback(config.RiderItem, Program.PreventItem);
+            throw new InvalidOperationException(
+                "P5136 공용 인벤토리를 만들 수 없습니다. 서버를 중지하고 카트 데이터 XML을 다시 추출하세요.",
+                exception);
         }
 
         foreach (List<PartsExcRecord> chunk in plan.PartsExcPackets)
@@ -68,25 +81,20 @@ internal static class Korean5136Inventory
             parent.Client.GetLocalEndPoint(),
             parent.Client.GetRemoteEndPoint(),
             nickname,
-            $"status={status}; excPackets={plan.PartsExcPackets.Count}; excRecords={plan.PartsExcRecordCount}; " +
+            $"status=catalog; excPackets={plan.PartsExcPackets.Count}; excRecords={plan.PartsExcRecordCount}; " +
             $"itemPackets={plan.ItemPackets.Count}; itemRecords={plan.ItemRecordCount}");
     }
 
     private static InventoryPlan BuildPlan(string profileDirectory, ushort slotChanger, bool preventItem)
     {
-        string itemPath = Path.Combine(profileDirectory, "Item.xml");
-        string kartPath = Path.Combine(profileDirectory, "NewKart.xml");
-        if (!File.Exists(itemPath))
+        IReadOnlyList<KartCatalogInventoryItem> catalog =
+            KartCatalogInventory.GetItemsSnapshot();
+        if (catalog.Count == 0)
         {
-            throw new FileNotFoundException("P5136 Item.xml was not found.", itemPath);
-        }
-        if (!File.Exists(kartPath))
-        {
-            throw new FileNotFoundException("P5136 NewKart.xml was not found.", kartPath);
+            throw new InvalidDataException(
+                "KartCatalog.xml has no loaded P5136 inventory data.");
         }
 
-        XmlDocument itemDocument = LoadXml(itemPath);
-        XmlDocument kartDocument = LoadXml(kartPath);
         var plan = new InventoryPlan();
 
         // HF_5136 sends Tune, Plant, Level, and Parts exception streams first.
@@ -94,39 +102,32 @@ internal static class Korean5136Inventory
         // streams contain no records and produce no packets.
         AddPartsExcPackets(plan, Path.Combine(profileDirectory, "PartsData.xml"));
 
-        AddXmlCategory(plan, itemDocument, "Pet", 21, AmountMode.One, slotChanger, preventItem);
-        AddXmlCategory(plan, itemDocument, "FlyingPet", 52, AmountMode.One, slotChanger, preventItem);
-        AddXmlCategory(plan, itemDocument, "Character", 1, AmountMode.One, slotChanger, preventItem);
-        AddXmlCategory(plan, itemDocument, "BonusCard", 32, AmountMode.One, slotChanger, preventItem);
-        AddXmlCategory(plan, itemDocument, "HandGearL", 16, AmountMode.One, slotChanger, preventItem);
-        AddXmlCategory(plan, itemDocument, "HeadBand", 11, AmountMode.One, slotChanger, preventItem);
-        AddXmlCategory(plan, itemDocument, "Goggle", 8, AmountMode.One, slotChanger, preventItem);
-        AddXmlCategory(plan, itemDocument, "Balloon", 9, AmountMode.SlotChanger, slotChanger, preventItem);
-        AddXmlCategory(plan, itemDocument, "Tachometer", 61, AmountMode.One, slotChanger, preventItem);
-        AddXmlCategory(plan, itemDocument, "SlotItem", 7, AmountMode.SlotChangerExceptThreeAndFour, slotChanger, preventItem);
-        AddXmlCategory(plan, itemDocument, "MyRoom", 28, AmountMode.One, slotChanger, preventItem);
-        AddXmlCategory(plan, itemDocument, "InitialCard", 22, AmountMode.SlotChanger, slotChanger, preventItem);
-        AddXmlCategory(plan, itemDocument, "Card", 23, AmountMode.SlotChanger, slotChanger, preventItem);
-        AddXmlCategory(plan, itemDocument, "HeadPhone", 12, AmountMode.One, slotChanger, preventItem);
-        AddXmlCategory(plan, itemDocument, "ReplayTicket", 13, AmountMode.SlotChanger, slotChanger, preventItem);
-        AddXmlCategory(plan, itemDocument, "Uniform", 18, AmountMode.One, slotChanger, preventItem);
-        AddXmlCategory(plan, itemDocument, "Decal", 20, AmountMode.One, slotChanger, preventItem);
-        AddXmlCategory(plan, itemDocument, "Plate", 4, AmountMode.One, slotChanger, preventItem);
-        AddXmlCategory(plan, itemDocument, "RidColor", 31, AmountMode.One, slotChanger, preventItem);
-        AddXmlCategory(plan, itemDocument, "SkidMark", 27, AmountMode.One, slotChanger, preventItem);
-        AddXmlCategory(plan, itemDocument, "Aura", 26, AmountMode.One, slotChanger, preventItem);
-        AddXmlCategory(plan, itemDocument, "Dye", 70, AmountMode.One, slotChanger, preventItem);
-        AddXmlCategory(plan, itemDocument, "Paint", 2, AmountMode.One, slotChanger, preventItem);
+        var records = new List<RiderItemRecord>();
+        foreach (KartCatalogInventoryItem item in catalog)
+        {
+            if (!KartCatalogInventory.IsGrantCategory(item.Category))
+            {
+                continue;
+            }
 
-        AddNormalRangePacket(plan, 43, 1, 23, slotChanger);
-        AddNormalRangePacket(plan, 44, 1, 15, slotChanger);
-        AddNormalRangePacket(plan, 45, 1, 23, slotChanger);
-        AddNormalRangePacket(plan, 46, 1, 30, slotChanger);
-        AddNormalRangePacket(plan, 37, 1, 1, slotChanger);
-        AddNormalRangePacket(plan, 38, 3, 6, slotChanger);
-        AddNormalRangePacket(plan, 49, 1, 1, slotChanger);
-        AddNormalRangePacket(plan, 53, 1, 1, slotChanger);
-        AddNormalRangePacket(plan, 39, 1, 1, slotChanger);
+            ushort amount = GetCatalogAmount(item.Category, item.Id, slotChanger);
+            records.Add(RiderItemRecord.Normal(
+                item.Category,
+                item.Id,
+                item.Serial,
+                amount,
+                preventItem));
+        }
+        if (records.Count < 5000 || records.Count(record => record.Category == 3) < 1200)
+        {
+            throw new InvalidDataException(
+                $"P5136 grant inventory is incomplete (items={records.Count}, " +
+                $"karts={records.Count(record => record.Category == 3)}).");
+        }
+        Dictionary<ushort, List<RiderItemRecord>> recordsByCategory = records
+            .GroupBy(record => record.Category)
+            .ToDictionary(group => group.Key, group => group.ToList());
+        AddCatalogCategoryPackets(plan, recordsByCategory, PrePartsCategoryOrder);
 
         AddPartsPacket(plan, 1, 1, 1053, 1053, 1053, 1053, 1080, 3, slotChanger);
         AddPartsPacket(plan, 1, 2, 1005, 1005, 1005, 1005, 1050, 5, slotChanger);
@@ -137,106 +138,73 @@ internal static class Korean5136Inventory
         AddPartsPacket(plan, 2, 3, 1010, 910, 1010, 910, 1100, 10, slotChanger);
         AddPartsPacket(plan, 2, 4, 910, 810, 910, 810, 1000, 10, slotChanger);
 
-        AddXmlCategory(plan, itemDocument, "V1EffectData", 68, AmountMode.SlotChanger, slotChanger, preventItem);
-        AddXmlCategory(plan, itemDocument, "V1BoosterEffectData", 69, AmountMode.SlotChanger, slotChanger, preventItem);
-        AddNormalRangePacket(plan, 67, 1, 2, slotChanger);
-        AddXmlCategory(plan, itemDocument, "upgradeKit", 14, AmountMode.One, slotChanger, preventItem);
-        AddXmlCategory(plan, kartDocument, "Kart", 3, AmountMode.One, slotChanger, preventItem, readSerial: true);
+        AddCatalogCategoryPackets(plan, recordsByCategory, PostPartsCategoryOrder);
 
         return plan;
     }
 
-    private static InventoryPlan BuildEquippedFallback(RiderItemData item, bool preventItem)
-    {
-        var plan = new InventoryPlan();
-        AddEquipped(plan, 1, item.Set_Character, 0, preventItem);
-        AddEquipped(plan, 2, item.Set_Paint, 0, preventItem);
-        AddEquipped(plan, 3, item.Set_Kart, item.Set_KartSN, preventItem);
-        AddEquipped(plan, 4, item.Set_Plate, 0, preventItem);
-        AddEquipped(plan, 8, item.Set_Goggle, 0, preventItem);
-        AddEquipped(plan, 9, item.Set_Balloon, 0, preventItem);
-        AddEquipped(plan, 11, item.Set_HeadBand, 0, preventItem);
-        AddEquipped(plan, 12, item.Set_HeadPhone, 0, preventItem);
-        AddEquipped(plan, 16, item.Set_HandGearL, 0, preventItem);
-        AddEquipped(plan, 18, item.Set_Uniform, 0, preventItem);
-        AddEquipped(plan, 20, item.Set_Decal, 0, preventItem);
-        AddEquipped(plan, 21, item.Set_Pet, 0, preventItem);
-        AddEquipped(plan, 26, item.Set_Aura, 0, preventItem);
-        AddEquipped(plan, 27, item.Set_SkidMark, 0, preventItem);
-        AddEquipped(plan, 31, item.Set_RidColor, 0, preventItem);
-        AddEquipped(plan, 32, item.Set_BonusCard, 0, preventItem);
-        AddEquipped(plan, 52, item.Set_FlyingPet, 0, preventItem);
-        AddEquipped(plan, 61, item.Set_Tachometer, 0, preventItem);
-        AddEquipped(plan, 70, item.Set_Dye, 0, preventItem);
-        return plan;
-    }
-
-    private static void AddEquipped(
+    private static void AddCatalogCategoryPackets(
         InventoryPlan plan,
-        ushort category,
-        ushort id,
-        ushort serial,
+        IReadOnlyDictionary<ushort, List<RiderItemRecord>> recordsByCategory,
+        IEnumerable<ushort> categoryOrder)
+    {
+        foreach (ushort category in categoryOrder)
+        {
+            if (!recordsByCategory.TryGetValue(category, out List<RiderItemRecord> records))
+            {
+                throw new InvalidDataException(
+                    $"P5136 grant inventory category {category} is missing.");
+            }
+            AddChunkedItemPackets(plan, records);
+        }
+    }
+
+    internal static IReadOnlyList<(
+        ushort Category,
+        ushort Id,
+        ushort Serial,
+        ushort Amount,
+        byte PartFlag,
+        byte Grade,
+        short Value)>
+        BuildGrantSnapshotForTesting(
+            string profileDirectory,
+            ushort slotChanger,
+            bool preventItem)
+    {
+        InventoryPlan plan = BuildPlan(profileDirectory, slotChanger, preventItem);
+        return plan.ItemPackets
+            .SelectMany(packet => packet)
+            .Select(record => (
+                record.Category,
+                record.Id,
+                record.Serial,
+                record.Amount,
+                record.PartFlag,
+                record.Grade,
+                record.Value))
+            .ToArray();
+    }
+
+    internal static IReadOnlyList<int> BuildItemPacketSizesForTesting(
+        string profileDirectory,
+        ushort slotChanger,
         bool preventItem)
     {
-        if (id == 0)
-        {
-            return;
-        }
-
-        plan.AddItemPacket(new List<RiderItemRecord>
-        {
-            RiderItemRecord.Normal(category, id, serial, 1, preventItem)
-        });
+        return BuildPlan(profileDirectory, slotChanger, preventItem)
+            .ItemPackets
+            .Select(packet => packet.Count)
+            .ToArray();
     }
 
-    private static void AddXmlCategory(
-        InventoryPlan plan,
-        XmlDocument document,
-        string tagName,
-        ushort category,
-        AmountMode amountMode,
-        ushort slotChanger,
-        bool preventItem,
-        bool readSerial = false)
+    private static ushort GetCatalogAmount(ushort category, ushort id, ushort slotChanger)
     {
-        XmlNodeList nodes = document.GetElementsByTagName(tagName);
-        var records = new List<RiderItemRecord>(nodes.Count);
-        foreach (XmlNode node in nodes)
+        if (UnitAmountCategories.Contains(category) ||
+            (category == 7 && (id == 3 || id == 4)))
         {
-            if (node is not XmlElement element)
-            {
-                continue;
-            }
-
-            ushort id = ParseUShort(element, "id");
-            ushort serial = readSerial && element.HasAttribute("sn")
-                ? ParseUShort(element, "sn")
-                : (ushort)0;
-            ushort amount = amountMode switch
-            {
-                AmountMode.SlotChanger => slotChanger,
-                AmountMode.SlotChangerExceptThreeAndFour when id != 3 && id != 4 => slotChanger,
-                _ => 1
-            };
-            records.Add(RiderItemRecord.Normal(category, id, serial, amount, preventItem));
+            return 1;
         }
-
-        AddChunkedItemPackets(plan, records);
-    }
-
-    private static void AddNormalRangePacket(
-        InventoryPlan plan,
-        ushort category,
-        ushort firstId,
-        ushort lastId,
-        ushort amount)
-    {
-        var records = new List<RiderItemRecord>(lastId - firstId + 1);
-        for (ushort id = firstId; id <= lastId; id++)
-        {
-            records.Add(RiderItemRecord.Normal(category, id, 0, amount, false));
-        }
-        plan.AddItemPacket(records);
+        return slotChanger;
     }
 
     private static void AddPartsPacket(
@@ -404,21 +372,11 @@ internal static class Korean5136Inventory
         return document;
     }
 
-    private static ushort ParseUShort(XmlElement element, string attribute) =>
-        ushort.Parse(element.GetAttribute(attribute), NumberStyles.Integer, CultureInfo.InvariantCulture);
-
     private static short ParseShort(XmlElement element, string attribute) =>
         short.Parse(element.GetAttribute(attribute), NumberStyles.Integer, CultureInfo.InvariantCulture);
 
     private static byte ParseByte(XmlElement element, string attribute) =>
         byte.Parse(element.GetAttribute(attribute), NumberStyles.Integer, CultureInfo.InvariantCulture);
-
-    private enum AmountMode
-    {
-        One,
-        SlotChanger,
-        SlotChangerExceptThreeAndFour
-    }
 
     private sealed class InventoryPlan
     {

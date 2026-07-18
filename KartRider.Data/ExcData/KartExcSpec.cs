@@ -23,6 +23,7 @@ namespace ExcData
         public float Plant43_TransAccelFactor { get; set; } = 0f;
         public float Plant43_DragFactor { get; set; } = 0f;
         public float Plant43_StartForwardAccelSpeed { get; set; } = 0f;
+        public float Plant43_StartForwardAccelItem { get; set; } = 0f;
         public float Plant43_ForwardAccel { get; set; } = 0f;
         public float Plant43_StartBoosterTimeSpeed { get; set; } = 0f;
 
@@ -151,7 +152,11 @@ namespace ExcData
             }
         }
 
-        public static void Use_PlantSpec(string Nickname, ExcSpecs excSpecs)
+        public static void Use_PlantSpec(
+            string Nickname,
+            ExcSpecs excSpecs,
+            KartRider.Compatibility.Korean5136PlantGameMode mode =
+                KartRider.Compatibility.Korean5136PlantGameMode.Unknown)
         {
             if (!FileName.FileNames.ContainsKey(Nickname))
             {
@@ -169,6 +174,35 @@ namespace ExcData
             var existingPlant = PlantList.FirstOrDefault(plant => plant.ID == Set_Kart && plant.SN == Set_KartSN);
             if (existingPlant != null)
             {
+                // P5136 source of truth: the complete client
+                // zeta_/kr/enchant/enchantMaterials.xml performance table.
+                // Returning for any known id also prevents ability-only and
+                // cosmetic entries from falling into the incomplete legacy
+                // approximation retained below for unknown/custom ids.
+                bool knownEngine = existingPlant.Engine == 43 &&
+                    KartRider.Compatibility.Korean5136PlantPerformance.Apply(
+                        excSpecs, existingPlant.Engine, existingPlant.EngineID, mode);
+                bool knownHandle = existingPlant.Handle == 44 &&
+                    KartRider.Compatibility.Korean5136PlantPerformance.Apply(
+                        excSpecs, existingPlant.Handle, existingPlant.HandleID, mode);
+                bool knownWheel = existingPlant.Wheel == 45 &&
+                    KartRider.Compatibility.Korean5136PlantPerformance.Apply(
+                        excSpecs, existingPlant.Wheel, existingPlant.WheelID, mode);
+                bool knownKit = existingPlant.Kit == 46 &&
+                    KartRider.Compatibility.Korean5136PlantPerformance.Apply(
+                        excSpecs, existingPlant.Kit, existingPlant.KitID, mode);
+                bool hasEquippedPlantPart = existingPlant.Engine == 43 ||
+                    existingPlant.Handle == 44 || existingPlant.Wheel == 45 ||
+                    existingPlant.Kit == 46;
+                if (!hasEquippedPlantPart ||
+                    ((existingPlant.Engine != 43 || knownEngine) &&
+                     (existingPlant.Handle != 44 || knownHandle) &&
+                     (existingPlant.Wheel != 45 || knownWheel) &&
+                     (existingPlant.Kit != 46 || knownKit)))
+                {
+                    return;
+                }
+
                 if (existingPlant.Engine == 43)
                 {
                     if (existingPlant.EngineID == 1)

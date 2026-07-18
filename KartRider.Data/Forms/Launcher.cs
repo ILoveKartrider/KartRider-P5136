@@ -537,6 +537,8 @@ namespace KartRider
                         loaded,
                         nameCount,
                         specCount,
+                        inventoryItemCount: KartCatalogInventory.TotalItemCount,
+                        inventoryCategoryCount: KartCatalogInventory.CategoryCount,
                         abilityCount: KartCatalogAbilities.TotalRuleCount,
                         resolvedAbilityCount: KartCatalogAbilities.ResolvedRuleCount,
                         error);
@@ -551,6 +553,8 @@ namespace KartRider
                 AppendLog(
                     $"카트 데이터 XML 로드: 카트 {catalogLoad.nameCount}개, " +
                     $"스펙 {catalogLoad.specCount}개, " +
+                    $"보유 아이템 {catalogLoad.inventoryItemCount}개/" +
+                    $"{catalogLoad.inventoryCategoryCount}분류, " +
                     $"능력 {catalogLoad.resolvedAbilityCount}/{catalogLoad.abilityCount}개 해석");
 
                 await Task.Run(() => ClientServerRuntime.Start(kartRiderDirectory, options));
@@ -706,6 +710,8 @@ namespace KartRider
                         exportedSpecs,
                         loadedNames,
                         loadedSpecs,
+                        inventoryItemCount: KartCatalogInventory.TotalItemCount,
+                        inventoryCategoryCount: KartCatalogInventory.CategoryCount,
                         abilityCount: KartCatalogAbilities.TotalRuleCount,
                         resolvedAbilityCount: KartCatalogAbilities.ResolvedRuleCount);
                 });
@@ -714,6 +720,8 @@ namespace KartRider
                 AppendLog(
                     $"카트 데이터 XML 추출 완료: 카트 {result.exportedNames}개, " +
                     $"스펙 {result.exportedSpecs}개, 로드 {result.loadedNames}/{result.loadedSpecs}개, " +
+                    $"보유 아이템 {result.inventoryItemCount}개/" +
+                    $"{result.inventoryCategoryCount}분류, " +
                     $"능력 {result.resolvedAbilityCount}/{result.abilityCount}개 해석, " +
                     $"경로={fullOutputPath}");
                 MessageBox.Show(
@@ -721,6 +729,8 @@ namespace KartRider
                     $"카트 데이터 XML을 생성하고 즉시 불러왔습니다.\n\n" +
                     $"카트 이름: {result.exportedNames}개\n" +
                     $"카트 스펙: {result.exportedSpecs}개\n" +
+                    $"보유 아이템: {result.inventoryItemCount}개 " +
+                    $"({result.inventoryCategoryCount}분류)\n" +
                     $"카트 능력: {result.resolvedAbilityCount}/{result.abilityCount}개 해석\n" +
                     $"저장 경로: {fullOutputPath}",
                     "카트 데이터 추출 완료",

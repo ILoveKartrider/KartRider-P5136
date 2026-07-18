@@ -49,6 +49,7 @@ if (!string.IsNullOrWhiteSpace(rhoCatalogTestRoot))
         }
 
         XDocument exportedCatalog = XDocument.Load(catalogPath);
+        XElement inventoryRoot = exportedCatalog.Root?.Element("Inventory");
         XElement itemSymbolsRoot = exportedCatalog.Root?.Element("ItemSymbols");
         XElement abilityRoot = exportedCatalog.Root?.Element("Abilities");
         bool HasItemSymbol(string name, string id) => itemSymbolsRoot?
@@ -57,6 +58,34 @@ if (!string.IsNullOrWhiteSpace(rhoCatalogTestRoot))
                 item.Attribute("name")?.Value == name &&
                 item.Attribute("id")?.Value == id &&
                 !string.IsNullOrWhiteSpace(item.Attribute("evidence")?.Value)) == true;
+        (string Name, string Id)[] hardcodedExecutableSymbols =
+        {
+            ("animalBooster", "31"), ("bigBanana", "85"),
+            ("blockRocket", "117"), ("candyRocket", "102"),
+            ("cokeBomb", "20"), ("cokeRocket", "30"),
+            ("cokeRocketWorldCup", "39"), ("darkCloud", "1"),
+            ("darkCloud2", "115"), ("dinoClawRocket", "108"),
+            ("dinoEggRocket", "107"), ("drrMine", "23"),
+            ("duckMine", "45"), ("eggMine", "82"),
+            ("foxTailRocket", "126"), ("goldRocket", "32"),
+            ("goldShield", "36"), ("infectedBomb", "27"),
+            ("infectedWaterFly", "119"), ("lockdownRocket", "104"),
+            ("prisonBomb", "47"), ("protectShield", "81"),
+            ("pumpkinBomb", "44"), ("rainbowCloud", "43"),
+            ("rollingCokeBomb", "22"), ("rollingInfectedBomb", "29"),
+            ("sirenShield", "106"), ("snowBomb", "34"),
+            ("snowWaterFly", "118"), ("snowman", "112"),
+            ("tigerGhost", "101"), ("tigerRocket", "99"),
+            ("timeCokeBomb", "21"), ("timeInfectedBomb", "28"),
+            ("timeSnowBomb", "35"), ("waterMine", "37"),
+            ("waterbombFly", "120")
+        };
+        bool hasAllHardcodedExecutableSymbols = hardcodedExecutableSymbols.All(expected =>
+            itemSymbolsRoot?.Elements("Item").Any(item =>
+                item.Attribute("name")?.Value == expected.Name &&
+                item.Attribute("id")?.Value == expected.Id &&
+                item.Attribute("evidence")?.Value ==
+                    "P5136 verified executable supplement") == true);
         XElement goldenChickenBananaRule = abilityRoot?
             .Element("TransformByKart")?
             .Elements("Rule")
@@ -107,9 +136,18 @@ if (!string.IsNullOrWhiteSpace(rhoCatalogTestRoot))
                 abilityRoot?.Attribute("resolved")?.Value,
                 out resolvedAbilityCount) &&
             totalAbilityCount == 721 &&
-            resolvedAbilityCount >= (hasUnpackedExecutable ? 719 : 294) &&
+            resolvedAbilityCount >= 719 &&
             resolvedAbilityCount <= totalAbilityCount;
-        if (exportedCatalog.Root?.Attribute("formatVersion")?.Value != "2" ||
+        int exportedInventoryCount = inventoryRoot?.Elements("Item").Count() ?? 0;
+        int exportedInventoryCategories = inventoryRoot?
+            .Elements("Item")
+            .Select(item => item.Attribute("category")?.Value)
+            .Distinct()
+            .Count() ?? 0;
+        int exportedKartInventoryCount = inventoryRoot?
+            .Elements("Item")
+            .Count(item => item.Attribute("category")?.Value == "3") ?? 0;
+        if (exportedCatalog.Root?.Attribute("formatVersion")?.Value != "3" ||
             exportedCatalog.Root?.Attribute("protocolVersion")?.Value != "5136" ||
             exportedCatalog.Root?.Attribute("region")?.Value != "kr" ||
             exportedCatalog.Root?.Attribute("sourceAaaSha256")?.Value.Length != 64 ||
@@ -120,10 +158,16 @@ if (!string.IsNullOrWhiteSpace(rhoCatalogTestRoot))
             !HasItemSymbol("goldEggMine", "83") ||
             !HasItemSymbol("superMagnet", "103") ||
             !HasItemSymbol("siren", "24") ||
+            !hasAllHardcodedExecutableSymbols ||
             goldenChickenBananaRule == null ||
             goldenChickenMagnetRule == null ||
             redLotusMagnetRule == null ||
             redLotusRocketRule == null ||
+            exportedInventoryCount < 6800 ||
+            exportedInventoryCategories < 60 ||
+            exportedKartInventoryCount < 1200 ||
+            inventoryRoot?.Elements("Item").Any(item =>
+                item.Attribute("id")?.Value == "0") != false ||
             !hasValidAbilityCounts)
         {
             Console.Error.WriteLine(
@@ -134,9 +178,12 @@ if (!string.IsNullOrWhiteSpace(rhoCatalogTestRoot))
                 $"goldEgg={HasItemSymbol("goldEggMine", "83")}; " +
                 $"superMagnet={HasItemSymbol("superMagnet", "103")}; " +
                 $"siren={HasItemSymbol("siren", "24")}; " +
+                $"hardcodedExecutableSymbols={hasAllHardcodedExecutableSymbols}; " +
                 $"rules={goldenChickenBananaRule != null}/" +
                 $"{goldenChickenMagnetRule != null}/{redLotusMagnetRule != null}/" +
-                $"{redLotusRocketRule != null}; counts={hasValidAbilityCounts} " +
+                $"{redLotusRocketRule != null}; inventory={exportedInventoryCount}/" +
+                $"{exportedInventoryCategories}/{exportedKartInventoryCount}; " +
+                $"counts={hasValidAbilityCounts} " +
                 $"({resolvedAbilityCount}/{totalAbilityCount})");
             return 1;
         }
@@ -165,12 +212,59 @@ if (!string.IsNullOrWhiteSpace(rhoCatalogTestRoot))
             redLotusSpec.GetElementsByTagName("BodyParam")[0] is not System.Xml.XmlElement redLotusBody ||
             redLotusBody.GetAttribute("ItemSlotCapacity") != "3" ||
             redLotusBody.GetAttribute("SpecialSlotCapacity") != "2" ||
+            KartCatalogInventory.TotalItemCount != exportedInventoryCount ||
+            KartCatalogInventory.CategoryCount != exportedInventoryCategories ||
             KartCatalogAbilities.ResolvedRuleCount == 0)
         {
             Console.Error.WriteLine(
                 $"P5136 kart catalog XML load failed: names={kartNameCount}, " +
                 $"specs={kartSpecCount}, error={loadError}");
             return 1;
+        }
+
+        string actualGrantProfile = Path.Combine(
+            Path.GetTempPath(),
+            $"P5136-CleanInventory-{Environment.ProcessId}-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(actualGrantProfile);
+            var actualGrant = Korean5136Inventory.BuildGrantSnapshotForTesting(
+                actualGrantProfile,
+                slotChanger: 999,
+                preventItem: false);
+            IReadOnlyList<int> actualPacketSizes =
+                Korean5136Inventory.BuildItemPacketSizesForTesting(
+                    actualGrantProfile,
+                    slotChanger: 999,
+                    preventItem: false);
+            var actualParts = actualGrant.Where(item =>
+                item.Category is >= 63 and <= 66).ToArray();
+            if (actualGrant.Count != 5674 ||
+                actualGrant.Count(item => item.Category == 3) != 1296 ||
+                actualGrant[0].Category != 21 ||
+                actualGrant[^1].Category != 3 ||
+                actualGrant.Any(item => item.Id == 0) ||
+                actualPacketSizes.Any(size => size <= 0 || size > 100) ||
+                actualParts.Length != 320 ||
+                actualParts.Any(item => item.PartFlag != 1 || item.Grade is < 1 or > 4) ||
+                actualGrant.Any(item =>
+                    (item.Category < 63 || item.Category > 66) && item.PartFlag != 0) ||
+                File.Exists(Path.Combine(actualGrantProfile, "Item.xml")) ||
+                File.Exists(Path.Combine(actualGrantProfile, "NewKart.xml")))
+            {
+                Console.Error.WriteLine(
+                    $"P5136 extracted all-items grant validation failed: " +
+                    $"items={actualGrant.Count}, " +
+                    $"karts={actualGrant.Count(item => item.Category == 3)}");
+                return 1;
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(actualGrantProfile))
+            {
+                Directory.Delete(actualGrantProfile, recursive: true);
+            }
         }
 
         int ReadFiringStep(XElement rule) => int.TryParse(
@@ -220,12 +314,14 @@ if (!string.IsNullOrWhiteSpace(rhoCatalogTestRoot))
         string brokenCatalogPath = catalogPath + ".broken";
         Dictionary<int, string> namesBeforeBrokenLoad = Kart.kartName;
         Dictionary<string, System.Xml.XmlDocument> specsBeforeBrokenLoad = Kart.kartSpec;
+        IReadOnlyList<KartCatalogInventoryItem> inventoryBeforeBrokenLoad =
+            KartCatalogInventory.GetItemsSnapshot();
         int abilitiesBeforeBrokenLoad = KartCatalogAbilities.TotalRuleCount;
         try
         {
             File.WriteAllText(
                 brokenCatalogPath,
-                "<KartCatalog formatVersion=\"2\"><Names>",
+                "<KartCatalog formatVersion=\"3\"><Names>",
                 new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
             if (KartRhoFile.TryLoadKartCatalogXml(
                     brokenCatalogPath,
@@ -234,6 +330,9 @@ if (!string.IsNullOrWhiteSpace(rhoCatalogTestRoot))
                     out _) ||
                 !ReferenceEquals(namesBeforeBrokenLoad, Kart.kartName) ||
                 !ReferenceEquals(specsBeforeBrokenLoad, Kart.kartSpec) ||
+                !ReferenceEquals(
+                    inventoryBeforeBrokenLoad,
+                    KartCatalogInventory.GetItemsSnapshot()) ||
                 KartCatalogAbilities.TotalRuleCount != abilitiesBeforeBrokenLoad)
             {
                 Console.Error.WriteLine(
@@ -251,7 +350,8 @@ if (!string.IsNullOrWhiteSpace(rhoCatalogTestRoot))
 
         Console.WriteLine(
             $"P5136 read-only RHO/XML kart catalog passed: names={kartNameCount}, " +
-            $"specs={kartSpecCount}, kart1453={goldenChickenName}, kart1450={redLotusName}");
+            $"specs={kartSpecCount}, inventory={KartCatalogInventory.TotalItemCount}, " +
+            $"kart1453={goldenChickenName}, kart1450={redLotusName}");
     }
     finally
     {
@@ -308,6 +408,32 @@ if (string.IsNullOrWhiteSpace(rhoCatalogTestRoot))
                                 new XAttribute("SpecialSlotCapacity", "2")
                             }
                             : Array.Empty<object>()))));
+        XElement syntheticInventoryElement = new XElement(
+            "Inventory",
+            Enumerable.Range(1, 70)
+                .Where(category => category != 3)
+                .SelectMany(category => Enumerable.Range(1, 100).Select(id => new XElement(
+                    "Item",
+                    new XAttribute("category", category),
+                    new XAttribute("id", id),
+                    new XAttribute("name", $"syntheticItem{category}_{id}")))),
+            Enumerable.Range(1, 1296)
+                .Concat(new[] { 1450, 1453 })
+                .Select(id => new XElement(
+                    "Item",
+                    new XAttribute("category", 3),
+                    new XAttribute("id", id),
+                    new XAttribute("name", SyntheticKartName(id)))));
+        syntheticInventoryElement.SetAttributeValue(
+            "total",
+            syntheticInventoryElement.Elements("Item").Count());
+        syntheticInventoryElement.SetAttributeValue(
+            "categories",
+            syntheticInventoryElement
+                .Elements("Item")
+                .Select(item => item.Attribute("category")?.Value)
+                .Distinct()
+                .Count());
         XElement itemSymbolsElement = new XElement(
             "ItemSymbols",
             new XAttribute("resolution", "synthetic-verified"),
@@ -372,12 +498,13 @@ if (string.IsNullOrWhiteSpace(rhoCatalogTestRoot))
         XDocument syntheticCatalog = new XDocument(
             new XElement(
                 "KartCatalog",
-                new XAttribute("formatVersion", "2"),
+                new XAttribute("formatVersion", "3"),
                 new XAttribute("protocolVersion", "5136"),
                 new XAttribute("region", "kr"),
                 new XAttribute("sourceAaaSha256", syntheticAaaHash),
                 namesElement,
                 specsElement,
+                syntheticInventoryElement,
                 itemSymbolsElement,
                 new XElement(
                     "Abilities",
@@ -396,6 +523,8 @@ if (string.IsNullOrWhiteSpace(rhoCatalogTestRoot))
                 out string syntheticError) ||
             syntheticNames != 1456 ||
             syntheticSpecs != 1302 ||
+            KartCatalogInventory.TotalItemCount !=
+                syntheticInventoryElement.Elements("Item").Count() ||
             KartCatalogAbilities.TotalRuleCount != 700)
         {
             Console.Error.WriteLine(
@@ -403,8 +532,52 @@ if (string.IsNullOrWhiteSpace(rhoCatalogTestRoot))
             return 1;
         }
 
+        string cleanInventoryProfile = Path.Combine(syntheticRoot, "CleanInventoryProfile");
+        Directory.CreateDirectory(cleanInventoryProfile);
+        var firstGrant = Korean5136Inventory.BuildGrantSnapshotForTesting(
+            cleanInventoryProfile,
+            slotChanger: 999,
+            preventItem: false);
+        var secondGrant = Korean5136Inventory.BuildGrantSnapshotForTesting(
+            cleanInventoryProfile,
+            slotChanger: 999,
+            preventItem: false);
+        IReadOnlyList<int> syntheticPacketSizes =
+            Korean5136Inventory.BuildItemPacketSizesForTesting(
+                cleanInventoryProfile,
+                slotChanger: 999,
+                preventItem: false);
+        int grantedKarts = firstGrant.Count(item => item.Category == 3);
+        var syntheticParts = firstGrant.Where(item =>
+            item.Category is >= 63 and <= 66).ToArray();
+        if (File.Exists(Path.Combine(cleanInventoryProfile, "Item.xml")) ||
+            File.Exists(Path.Combine(cleanInventoryProfile, "NewKart.xml")) ||
+            firstGrant.Count < 5500 ||
+            grantedKarts != 1298 ||
+            firstGrant[0].Category != 21 ||
+            firstGrant[^1].Category != 3 ||
+            !firstGrant.Any(item => item.Category == 3 && item.Id == 1450) ||
+            !firstGrant.Any(item => item.Category == 3 && item.Id == 1453) ||
+            firstGrant.Any(item => item.Id == 0) ||
+            syntheticPacketSizes.Any(size => size <= 0 || size > 100) ||
+            syntheticParts.Length != 320 ||
+            syntheticParts.Any(item => item.PartFlag != 1 || item.Grade is < 1 or > 4) ||
+            firstGrant.First(item => item.Category == 1 && item.Id == 1).Amount != 1 ||
+            firstGrant.First(item => item.Category == 7 && item.Id == 3).Amount != 1 ||
+            firstGrant.First(item => item.Category == 7 && item.Id == 1).Amount != 999 ||
+            firstGrant.First(item => item.Category == 9 && item.Id == 1).Amount != 999 ||
+            !firstGrant.SequenceEqual(secondGrant))
+        {
+            Console.Error.WriteLine(
+                $"P5136 clean-profile all-items grant failed: " +
+                $"items={firstGrant.Count}, karts={grantedKarts}");
+            return 1;
+        }
+
         Dictionary<int, string> publishedNames = Kart.kartName;
         Dictionary<string, System.Xml.XmlDocument> publishedSpecs = Kart.kartSpec;
+        IReadOnlyList<KartCatalogInventoryItem> publishedInventory =
+            KartCatalogInventory.GetItemsSnapshot();
         int publishedAbilities = KartCatalogAbilities.TotalRuleCount;
         XDocument wrongProtocol = new XDocument(syntheticCatalog);
         wrongProtocol.Root!.SetAttributeValue("protocolVersion", "9999");
@@ -417,6 +590,7 @@ if (string.IsNullOrWhiteSpace(rhoCatalogTestRoot))
                 out _) ||
             !ReferenceEquals(publishedNames, Kart.kartName) ||
             !ReferenceEquals(publishedSpecs, Kart.kartSpec) ||
+            !ReferenceEquals(publishedInventory, KartCatalogInventory.GetItemsSnapshot()) ||
             KartCatalogAbilities.TotalRuleCount != publishedAbilities)
         {
             Console.Error.WriteLine("P5136 wrong-protocol catalog was accepted.");
@@ -438,9 +612,37 @@ if (string.IsNullOrWhiteSpace(rhoCatalogTestRoot))
                 out _) ||
             !ReferenceEquals(publishedNames, Kart.kartName) ||
             !ReferenceEquals(publishedSpecs, Kart.kartSpec) ||
+            !ReferenceEquals(publishedInventory, KartCatalogInventory.GetItemsSnapshot()) ||
             KartCatalogAbilities.TotalRuleCount != publishedAbilities)
         {
             Console.Error.WriteLine("P5136 incomplete catalog was accepted.");
+            return 1;
+        }
+
+        XDocument incompleteInventoryCatalog = new XDocument(syntheticCatalog);
+        incompleteInventoryCatalog.Root!
+            .Element("Inventory")!
+            .Elements("Item")
+            .Skip(1000)
+            .Remove();
+        incompleteInventoryCatalog.Root!
+            .Element("Inventory")!
+            .SetAttributeValue("total", 1000);
+        string incompleteInventoryPath = Path.Combine(
+            syntheticProfile,
+            "IncompleteInventory.xml");
+        incompleteInventoryCatalog.Save(incompleteInventoryPath);
+        if (KartRhoFile.TryLoadKartCatalogXml(
+                incompleteInventoryPath,
+                out _,
+                out _,
+                out _) ||
+            !ReferenceEquals(publishedNames, Kart.kartName) ||
+            !ReferenceEquals(publishedSpecs, Kart.kartSpec) ||
+            !ReferenceEquals(publishedInventory, KartCatalogInventory.GetItemsSnapshot()) ||
+            KartCatalogAbilities.TotalRuleCount != publishedAbilities)
+        {
+            Console.Error.WriteLine("P5136 incomplete inventory catalog was accepted.");
             return 1;
         }
 
@@ -452,6 +654,7 @@ if (string.IsNullOrWhiteSpace(rhoCatalogTestRoot))
                 out _) ||
             !ReferenceEquals(publishedNames, Kart.kartName) ||
             !ReferenceEquals(publishedSpecs, Kart.kartSpec) ||
+            !ReferenceEquals(publishedInventory, KartCatalogInventory.GetItemsSnapshot()) ||
             KartCatalogAbilities.TotalRuleCount != publishedAbilities)
         {
             Console.Error.WriteLine("P5136 mismatched catalog fingerprint was accepted.");
@@ -469,6 +672,70 @@ if (string.IsNullOrWhiteSpace(rhoCatalogTestRoot))
         }
     }
 }
+
+bool ApplyPlant(
+    short category,
+    short id,
+    Korean5136PlantGameMode mode,
+    out ExcSpecs specs)
+{
+    specs = new ExcSpecs();
+    return Korean5136PlantPerformance.Apply(specs, category, id, mode);
+}
+
+bool plantSnapshotValid =
+    Korean5136PlantPerformance.EntryCount == 91 &&
+    Korean5136PlantPerformance.GetCategoryEntryCount(43) == 23 &&
+    Korean5136PlantPerformance.GetCategoryEntryCount(44) == 15 &&
+    Korean5136PlantPerformance.GetCategoryEntryCount(45) == 23 &&
+    Korean5136PlantPerformance.GetCategoryEntryCount(46) == 30 &&
+    ApplyPlant(43, 1, Korean5136PlantGameMode.Speed, out ExcSpecs engine1) &&
+    engine1.Plant43_TransAccelFactor == 0.002f &&
+    engine1.Plant43_DragFactor == -0.0007f &&
+    ApplyPlant(43, 5, Korean5136PlantGameMode.Item, out ExcSpecs engine5) &&
+    engine5.Plant43_StartForwardAccelSpeed == 0f &&
+    engine5.Plant43_StartForwardAccelItem == 0.04f &&
+    ApplyPlant(43, 6, Korean5136PlantGameMode.Item, out ExcSpecs engine6Item) &&
+    engine6Item.Plant43_DragFactor == 0f &&
+    ApplyPlant(43, 6, Korean5136PlantGameMode.Speed, out ExcSpecs engine6Speed) &&
+    engine6Speed.Plant43_DragFactor == -0.0021f &&
+    ApplyPlant(45, 14, Korean5136PlantGameMode.Speed, out ExcSpecs wheel14Speed) &&
+    wheel14Speed.Plant45_DriftEscapeForce == 0f &&
+    ApplyPlant(45, 14, Korean5136PlantGameMode.Item, out ExcSpecs wheel14Item) &&
+    wheel14Item.Plant45_DriftEscapeForce == 50f &&
+    wheel14Item.Plant45_DriftMaxGauge == 40f &&
+    ApplyPlant(46, 6, Korean5136PlantGameMode.Speed, out ExcSpecs kit6) &&
+    kit6.Plant46_NormalBoosterTime == 60f &&
+    kit6.Plant46_AnimalBoosterTime == 80f &&
+    ApplyPlant(46, 9, Korean5136PlantGameMode.Speed, out ExcSpecs kit9) &&
+    kit9.Plant46_StartBoosterTimeSpeed == 195f &&
+    ApplyPlant(46, 16, Korean5136PlantGameMode.Item, out ExcSpecs kit16) &&
+    kit16.Plant46_GripBrake == 0f &&
+    kit16.Plant46_SlipBrake == 10f &&
+    ApplyPlant(46, 17, Korean5136PlantGameMode.Item, out ExcSpecs kit17Item) &&
+    kit17Item.Plant46_AnimalBoosterTime == 0f &&
+    ApplyPlant(46, 17, Korean5136PlantGameMode.Battle, out ExcSpecs kit17Battle) &&
+    kit17Battle.Plant46_AnimalBoosterTime == 100f &&
+    kit17Battle.Plant46_SlipBrake == 9f &&
+    ApplyPlant(46, 21, Korean5136PlantGameMode.Speed, out ExcSpecs kit21) &&
+    kit21.Plant46_StartBoosterTimeSpeed == 150f &&
+    ApplyPlant(46, 22, Korean5136PlantGameMode.Speed, out ExcSpecs kit22) &&
+    kit22.Plant46_ForwardAccel == 1.5f &&
+    ApplyPlant(46, 11, Korean5136PlantGameMode.Item, out ExcSpecs kit11Item) &&
+    kit11Item.Plant46_ItemSlotCapacity == 0 &&
+    ApplyPlant(46, 11, Korean5136PlantGameMode.Battle, out ExcSpecs kit11Battle) &&
+    kit11Battle.Plant46_ItemSlotCapacity == 3 &&
+    ApplyPlant(46, 12, Korean5136PlantGameMode.TimeAttack, out ExcSpecs kit12) &&
+    kit12.Plant46_SpeedSlotCapacity == 3 &&
+    Korean5136PlantPerformance.FromRoomGameType(1) == Korean5136PlantGameMode.Speed &&
+    Korean5136PlantPerformance.FromRoomGameType(4) == Korean5136PlantGameMode.Item &&
+    !ApplyPlant(46, 31, Korean5136PlantGameMode.Speed, out _);
+if (!plantSnapshotValid)
+{
+    Console.Error.WriteLine("P5136 client plant-part performance snapshot validation failed.");
+    return 1;
+}
+Console.WriteLine("P5136 client plant-part performance snapshot passed (91/91 entries).");
 
 string itemProbabilityTestRoot = Environment.GetEnvironmentVariable("P5136_ITEM_TEST_ROOT");
 if (!string.IsNullOrWhiteSpace(itemProbabilityTestRoot))

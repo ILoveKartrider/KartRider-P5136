@@ -45,7 +45,13 @@ namespace KartRider
             {
                 oPacket.WriteInt(Unk1);
                 oPacket.WriteInt(0);
-                GetKartSpac(oPacket, Nickname, StartTimeAttack_SpeedType, KartID, FlyingPetID);
+                GetKartSpac(
+                    oPacket,
+                    Nickname,
+                    StartTimeAttack_SpeedType,
+                    KartID,
+                    FlyingPetID,
+                    Korean5136PlantGameMode.TimeAttack);
                 oPacket.WriteByte(0);
                 oPacket.WriteInt(0);
                 oPacket.WriteInt(0);
@@ -61,7 +67,13 @@ namespace KartRider
             using (OutPacket oPacket = new OutPacket("PrchallengerKartSpec"))
             {
                 oPacket.WriteByte(1);
-                GetKartSpac(oPacket, Nickname, StartTimeAttack_SpeedType, KartID, FlyingPetID);
+                GetKartSpac(
+                    oPacket,
+                    Nickname,
+                    StartTimeAttack_SpeedType,
+                    KartID,
+                    FlyingPetID,
+                    Korean5136PlantGameMode.Speed);
                 oPacket.WriteInt(0);
                 oPacket.WriteByte(0);
                 Parent.Client.Send(oPacket);
@@ -96,7 +108,13 @@ namespace KartRider
             }
         }
 
-        public static void GetKartSpac(OutPacket oPacket, string Nickname, byte StartTimeAttack_SpeedType, ushort KartID, ushort FlyingPetID)
+        public static void GetKartSpac(
+            OutPacket oPacket,
+            string Nickname,
+            byte StartTimeAttack_SpeedType,
+            ushort KartID,
+            ushort FlyingPetID,
+            Korean5136PlantGameMode plantGameMode = Korean5136PlantGameMode.Speed)
         {
             var speed = GetSpeedType(Nickname, StartTimeAttack_SpeedType);
             var speedType = speed.Item1;
@@ -115,7 +133,7 @@ namespace KartRider
             if (KartID == ProfileService.GetProfileConfig(Nickname).RiderItem.Set_Kart)
             {
                 ExcSpec.Use_TuneSpec(Nickname, excSpecs);
-                ExcSpec.Use_PlantSpec(Nickname, excSpecs);
+                ExcSpec.Use_PlantSpec(Nickname, excSpecs, plantGameMode);
                 ExcSpec.Use_KartLevelSpec(Nickname, excSpecs);
                 ExcSpec.Use_PartsSpec(Nickname, excSpecs);
             }
@@ -135,8 +153,12 @@ namespace KartRider
             oPacket.WriteEncFloat(Kart.driftBoostMulAccelFactor);
             oPacket.WriteEncInt(Kart.driftBoostTick);
             oPacket.WriteEncFloat(Kart.chargeBoostBySpeed);
-            oPacket.WriteEncByte((byte)(Kart.SpeedSlotCapacity + excSpecs.Plant46_SpeedSlotCapacity));
-            oPacket.WriteEncByte((byte)(Kart.ItemSlotCapacity + excSpecs.Plant46_ItemSlotCapacity));
+            oPacket.WriteEncByte(excSpecs.Plant46_SpeedSlotCapacity == 0
+                ? Kart.SpeedSlotCapacity
+                : excSpecs.Plant46_SpeedSlotCapacity);
+            oPacket.WriteEncByte(excSpecs.Plant46_ItemSlotCapacity == 0
+                ? Kart.ItemSlotCapacity
+                : excSpecs.Plant46_ItemSlotCapacity);
             oPacket.WriteEncByte(Kart.SpecialSlotCapacity);
             oPacket.WriteEncByte(Kart.UseTransformBooster);
             oPacket.WriteEncByte(Kart.motorcycleType);
@@ -218,7 +240,7 @@ namespace KartRider
             oPacket.WriteEncFloat(speedType.BoostAccelFactor + Kart.BoostAccelFactor + SpeedPatch.BoostAccelFactor);
             oPacket.WriteEncFloat(Kart.StartBoosterTimeItem + excSpecs.KartLevel_StartBoosterTimeItem + excSpecs.Plant46_StartBoosterTimeItem);
             oPacket.WriteEncFloat(Kart.StartBoosterTimeSpeed + excSpecs.Tune_StartBoosterTimeSpeed + excSpecs.Plant43_StartBoosterTimeSpeed + excSpecs.Plant46_StartBoosterTimeSpeed + excSpecs.KartLevel_StartBoosterTimeSpeed + V2Spec.V2Level_StartBoosterTimeSpeed);
-            oPacket.WriteEncFloat(StartForwardAccelForceItem + FlyingPet.StartForwardAccelForceItem + SpeedPatch.StartForwardAccelForceItem + excSpecs.Plant46_StartForwardAccelItem);
+            oPacket.WriteEncFloat(StartForwardAccelForceItem + FlyingPet.StartForwardAccelForceItem + SpeedPatch.StartForwardAccelForceItem + excSpecs.Plant43_StartForwardAccelItem + excSpecs.Plant46_StartForwardAccelItem);
             oPacket.WriteEncFloat(StartForwardAccelForceSpeed + FlyingPet.StartForwardAccelForceSpeed + SpeedPatch.StartForwardAccelForceSpeed + excSpecs.Plant43_StartForwardAccelSpeed + excSpecs.Plant46_StartForwardAccelSpeed);
             oPacket.WriteEncFloat(Kart.DriftGaguePreservePercent);
             oPacket.WriteEncByte(Kart.UseExtendedAfterBooster);
