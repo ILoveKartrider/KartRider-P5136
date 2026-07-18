@@ -37,6 +37,9 @@ namespace KartRider.ServerLauncher
         public List<ItemProbabilityEntry> TeamItemProbabilities { get; set; } =
             new List<ItemProbabilityEntry>();
 
+        public RandomTrackConfiguration RandomTracks { get; set; } =
+            new RandomTrackConfiguration();
+
         public static string DefaultLogDirectory =>
             Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "logs"));
 
@@ -60,7 +63,8 @@ namespace KartRider.ServerLauncher
                 IndividualItemProbabilities = ItemProbabilityConfiguration.CloneEntries(
                     IndividualItemProbabilities),
                 TeamItemProbabilities = ItemProbabilityConfiguration.CloneEntries(
-                    TeamItemProbabilities)
+                    TeamItemProbabilities),
+                RandomTracks = (RandomTracks ?? new RandomTrackConfiguration()).Clone()
             };
         }
 
@@ -98,7 +102,8 @@ namespace KartRider.ServerLauncher
                 IndividualItemProbabilities = ItemProbabilityConfiguration.CloneEntries(
                     IndividualItemProbabilities),
                 TeamItemProbabilities = ItemProbabilityConfiguration.CloneEntries(
-                    TeamItemProbabilities)
+                    TeamItemProbabilities),
+                RandomTracks = (RandomTracks ?? new RandomTrackConfiguration()).Clone()
             };
             options.Validate(profile);
         }

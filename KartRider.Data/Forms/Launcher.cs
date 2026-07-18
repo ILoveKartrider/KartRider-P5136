@@ -29,6 +29,7 @@ namespace KartRider
         private readonly Button stopServerButton = new Button();
         private readonly Button gameSettingsButton = new Button();
         private readonly Button itemProbabilityButton = new Button();
+        private readonly Button randomTrackButton = new Button();
         private readonly Button extractKartCatalogButton = new Button();
         private readonly Button saveLogButton = new Button();
         private readonly Label statusLabel = new Label();
@@ -43,6 +44,8 @@ namespace KartRider
         private ServerLauncherSettings settings;
         private ItemProbabilityConfiguration itemProbabilityConfiguration =
             new ItemProbabilityConfiguration();
+        private RandomTrackConfiguration randomTrackConfiguration =
+            new RandomTrackConfiguration();
         private IPAddress confirmedUnassignedAdvertisedAddress;
         private bool serverBusy;
         private bool shutdownStarted;
@@ -213,6 +216,10 @@ namespace KartRider
                 "아이템 확률",
                 ItemProbabilityButton_Click);
             ConfigureActionButton(
+                randomTrackButton,
+                "랜덤 맵 목록",
+                RandomTrackButton_Click);
+            ConfigureActionButton(
                 extractKartCatalogButton,
                 "카트 데이터 XML 추출",
                 ExtractKartCatalogButton_Click);
@@ -226,6 +233,7 @@ namespace KartRider
                 stopServerButton,
                 gameSettingsButton,
                 itemProbabilityButton,
+                randomTrackButton,
                 extractKartCatalogButton,
                 saveLogButton,
                 statusLabel
@@ -340,6 +348,8 @@ namespace KartRider
                 Team = ItemProbabilityConfiguration.CloneEntries(
                     settings.TeamItemProbabilities)
             };
+            randomTrackConfiguration = (settings.RandomTracks ??
+                new RandomTrackConfiguration()).Clone();
             RefreshTopology();
             RefreshServerStatus();
         }
@@ -361,7 +371,8 @@ namespace KartRider
                 IndividualItemProbabilities = ItemProbabilityConfiguration.CloneEntries(
                     itemProbabilityConfiguration.Individual),
                 TeamItemProbabilities = ItemProbabilityConfiguration.CloneEntries(
-                    itemProbabilityConfiguration.Team)
+                    itemProbabilityConfiguration.Team),
+                RandomTracks = randomTrackConfiguration.Clone()
             };
             captured.Validate(ClientBuildProfiles.Active);
             return captured;
@@ -432,6 +443,7 @@ namespace KartRider
             stopServerButton.Enabled = !serverBusy && hasResources;
             gameSettingsButton.Enabled = !serverBusy;
             itemProbabilityButton.Enabled = canEdit;
+            randomTrackButton.Enabled = canEdit;
             extractKartCatalogButton.Enabled = canEdit;
             saveLogButton.Enabled = !serverBusy;
             RefreshWindowTitle();
@@ -570,6 +582,9 @@ namespace KartRider
                     $"개인전 사용자 설정={options.IndividualItemProbabilities.Count}종, " +
                     $"팀전 사용자 설정={options.TeamItemProbabilities.Count}종");
                 AppendLog(
+                    $"랜덤 맵: 클라이언트 원본 자동 로드, " +
+                    $"수동 목록={options.RandomTracks.Pools.Count}개");
+                AppendLog(
                     $"서버 시작: 수신={options.BindAddress}, 광고={options.AdvertisedAddress}, " +
                     $"로그인 TCP={ports.ResolveLoginTcpPort(options.ConfiguredPort)}, " +
                     $"게임 UDP={ports.ResolveUdpPort(options.ConfiguredPort)}, " +
@@ -652,6 +667,55 @@ namespace KartRider
                 AppendLog(
                     $"아이템 확률 설정 저장: {mode}, " +
                     $"순위 기준={itemProbabilityConfiguration.RankBand}");
+            }
+        }
+
+        private void RandomTrackButton_Click(object sender, EventArgs e)
+        {
+            string gameDirectory = string.IsNullOrWhiteSpace(kartRiderDirectory)
+                ? FileName.appDir
+                : kartRiderDirectory;
+            UseWaitCursor = true;
+            try
+            {
+                if (!Korean5136RandomTrackService.TryLoadClientCatalog(
+                        gameDirectory,
+                        out Korean5136RandomTrackCatalog catalog,
+                        out string error))
+                {
+                    throw new InvalidDataException(error);
+                }
+
+                using RandomTrackEditorForm dialog = new RandomTrackEditorForm(
+                    catalog,
+                    randomTrackConfiguration);
+                UseWaitCursor = false;
+                if (dialog.ShowDialog(this) != DialogResult.OK || dialog.Result == null)
+                {
+                    return;
+                }
+
+                randomTrackConfiguration = dialog.Result.Clone();
+                if (TrySaveSettings(showSuccess: false, showErrors: true))
+                {
+                    AppendLog(
+                        $"랜덤 맵 목록 저장: 클라이언트 트랙 {catalog.Tracks.Count}개, " +
+                        $"수동 설정 {randomTrackConfiguration.Pools.Count}개");
+                }
+            }
+            catch (Exception exception)
+            {
+                ShowError(
+                    "랜덤 맵 목록 불러오기 실패",
+                    new InvalidOperationException(
+                        "클라이언트 Data\\track_common.rho의 랜덤 목록과 한국어 이름을 " +
+                        "불러올 수 없습니다. 게임 데이터 경로를 확인하세요.\n\n" +
+                        exception.Message,
+                        exception));
+            }
+            finally
+            {
+                UseWaitCursor = false;
             }
         }
 

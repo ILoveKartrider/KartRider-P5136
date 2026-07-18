@@ -22,6 +22,19 @@ internal static class KartCatalogInventory
         53, 55, 59, 61, 67, 68, 69, 70
     };
 
+    // The KR 5136 shop table contains character rows that are not selectable
+    // rider models.  Most are explicitly named as dummy/paper assets, while
+    // four licensed rows are likewise absent from the client's grant roster.
+    // Advertising ownership of any of these rows makes the character-list UI
+    // instantiate an unsupported model and terminate the client.
+    private static readonly HashSet<ushort> UnsafeCharacterItemIds = new HashSet<ushort>
+    {
+        45, 47, 48, 52, 59, 116, 117, 124, 128, 130, 137, 144, 147,
+        149, 159, 175, 176, 184, 192, 193, 194, 195, 196, 197, 231,
+        245, 246, 247, 265, 301, 302, 333, 350, 376, 377, 391, 392,
+        396, 397
+    };
+
     private sealed class Snapshot
     {
         public static readonly Snapshot Empty = new Snapshot(
@@ -74,5 +87,12 @@ internal static class KartCatalogInventory
     internal static bool IsGrantCategory(ushort category)
     {
         return GrantCategoryIds.Contains(category);
+    }
+
+    internal static bool IsGrantItem(KartCatalogInventoryItem item)
+    {
+        return item != null &&
+            GrantCategoryIds.Contains(item.Category) &&
+            (item.Category != 1 || !UnsafeCharacterItemIds.Contains(item.Id));
     }
 }

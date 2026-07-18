@@ -20,6 +20,13 @@ using System.Windows.Forms;
 
 namespace KartRider;
 
+internal enum RaceSettlementPacketKind
+{
+    GameControl,
+    GameNextStage,
+    GameResult
+}
+
 public static class MultyPlayer
 {
     public static List<short> itemProb_indi = new List<short>();
@@ -348,6 +355,70 @@ public static class MultyPlayer
         }
     }
 
+    internal static RaceSettlementPacketKind[] GetSettlementPacketOrder(ClientBuild build)
+    {
+        if (build == ClientBuild.Korean5136)
+        {
+            // P5136 builds the ceremony roster from the result snapshot when
+            // GameControl type 4 advances to the final stage. Sending type 4
+            // first leaves only the locally known rider in that roster.
+            return new[]
+            {
+                RaceSettlementPacketKind.GameNextStage,
+                RaceSettlementPacketKind.GameResult,
+                RaceSettlementPacketKind.GameControl
+            };
+        }
+
+        return new[]
+        {
+            RaceSettlementPacketKind.GameControl,
+            RaceSettlementPacketKind.GameNextStage,
+            RaceSettlementPacketKind.GameResult
+        };
+    }
+
+    private static void DispatchSettlementPackets(
+        GameRoom room,
+        RoomMember[] members,
+        Dictionary<int, uint> timeData,
+        uint endTicks)
+    {
+        RaceSettlementPacketKind[] order = GetSettlementPacketOrder(
+            ClientBuildProfiles.Active.Build);
+        Console.WriteLine(
+            "[SETTLEMENT] room={0}, players={1}, order={2}",
+            room.RoomId,
+            members.Count(member => member is Player),
+            string.Join(" -> ", order));
+
+        foreach (RaceSettlementPacketKind packetKind in order)
+        {
+            switch (packetKind)
+            {
+                case RaceSettlementPacketKind.GameControl:
+                    using (OutPacket outPacket = new OutPacket("GameControlPacket"))
+                    {
+                        WriteGameControlBody(outPacket, 4, endTicks + 6000);
+                        BroadCast(room.RoomId, outPacket);
+                    }
+                    break;
+
+                case RaceSettlementPacketKind.GameNextStage:
+                    GameNextStagePacket(room);
+                    break;
+
+                case RaceSettlementPacketKind.GameResult:
+                    GameResultPacket(room, members, timeData);
+                    break;
+
+                default:
+                    throw new InvalidOperationException(
+                        $"Unknown settlement packet kind: {packetKind}");
+            }
+        }
+    }
+
     static void Set_settleTrigger(GameRoom room, long raceGeneration)
     {
         var onceTimer = new System.Timers.Timer();
@@ -387,13 +458,11 @@ public static class MultyPlayer
             timeDataSnapshot = new Dictionary<int, uint>(room.TimeData);
         }
 
-        using (OutPacket outPacket = new OutPacket("GameControlPacket"))
-        {
-            WriteGameControlBody(outPacket, 4, endTicks + 6000);
-            BroadCast(room.RoomId, outPacket);
-        }
-
-        GameResultPacket(room, participantSnapshot, timeDataSnapshot);
+        DispatchSettlementPackets(
+            room,
+            participantSnapshot,
+            timeDataSnapshot,
+            endTicks);
 
         int firstID = room.Ranking.FirstOrDefault(x => x.Value == 0).Key;
         if (room.RoomMaster < 8 && RoomManager.TryGetIdDetail(room.RoomId, firstID) is Player p1)
@@ -2479,6 +2548,17 @@ public static class MultyPlayer
         }
     }
 
+    private static void GameNextStagePacket(GameRoom room)
+    {
+        using (OutPacket outPacket = new OutPacket("GameNextStagePacket"))
+        {
+            outPacket.WriteByte(room.GameType);
+            outPacket.WriteInt();
+            outPacket.WriteInt();
+            BroadCast(room.RoomId, outPacket);
+        }
+    }
+
     static void GameResultPacket(GameRoom room, RoomMember[] members, Dictionary<int, uint> timeData)
     {
         int playerCount = 0;
@@ -2544,14 +2624,6 @@ public static class MultyPlayer
                     redTeam += teamPoints[ranking[a3.ID]];
                 }
             }
-        }
-
-        using (OutPacket outPacket = new OutPacket("GameNextStagePacket"))
-        {
-            outPacket.WriteByte(room.GameType);
-            outPacket.WriteInt();
-            outPacket.WriteInt();
-            BroadCast(room.RoomId, outPacket);
         }
 
         using (OutPacket outPacket = new OutPacket("GameResultPacket"))

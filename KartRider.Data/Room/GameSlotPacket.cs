@@ -106,12 +106,43 @@ public class SlotData
                 }
                 return;
             }
-            else if (type is 9 or 12)
+            else if (type == 9)
             {
                 using (OutPacket oPacket = new OutPacket())
                 {
                     oPacket.WriteBytes(iPacket.ToArray());
                     MultyPlayer.BroadCast(roomId, oPacket, Parent.Client.Nickname);
+                }
+                return;
+            }
+            else if (type == 12)
+            {
+                byte[] packet = iPacket.ToArray();
+                BarricadePlacementContext placement = default;
+                bool echoToSender = TryResolveSenderInclusivePlacement(
+                    type,
+                    packet,
+                    out placement);
+                if (echoToSender)
+                {
+                    PacketTrace.LogDetailEvent(
+                        "LOGIN-TCP",
+                        "BARRICADE-PLACEMENT",
+                        null,
+                        null,
+                        Parent.Client.Nickname,
+                        $"playerId={placement.PlayerId}; objectId=0x{placement.ObjectId:X8}; " +
+                        $"xyz=({placement.X:R},{placement.Y:R},{placement.Z:R}); " +
+                        "recipients=room including sender");
+                }
+
+                using (OutPacket oPacket = new OutPacket())
+                {
+                    oPacket.WriteBytes(packet);
+                    MultyPlayer.BroadCast(
+                        roomId,
+                        oPacket,
+                        echoToSender ? string.Empty : Parent.Client.Nickname);
                 }
                 return;
             }
@@ -221,6 +252,68 @@ public class SlotData
             BitConverter.ToSingle(data, 13),
             BitConverter.ToSingle(data, 17),
             BitConverter.ToSingle(data, 21));
+    }
+
+    internal static bool TryResolveSenderInclusivePlacement(
+        byte type,
+        byte[] packet,
+        out BarricadePlacementContext placement)
+    {
+        placement = default;
+        return ClientBuildProfiles.Active.Build == ClientBuild.Korean5136 &&
+               type == 12 &&
+               TryParseKorean5136BarricadePlacement(packet, out placement);
+    }
+
+    internal static bool TryParseKorean5136BarricadePlacement(
+        byte[] packet,
+        out BarricadePlacementContext placement)
+    {
+        const int PacketLength = 93;
+        const int PayloadLength = 73;
+        const uint GameSlotPacketHash = 0x27C00574;
+        const uint GopBarricadeHash = 0x1D8604A3;
+        const uint GoItemBarricadeHash = 0x2D0605C2;
+
+        placement = default;
+        if (packet == null ||
+            packet.Length != PacketLength ||
+            BitConverter.ToUInt32(packet, 0) != GameSlotPacketHash ||
+            packet[12] != 12 ||
+            BitConverter.ToUInt32(packet, 16) != PayloadLength ||
+            BitConverter.ToUInt32(packet, 20) != GopBarricadeHash ||
+            BitConverter.ToUInt32(packet, 24) != GoItemBarricadeHash ||
+            packet[32] != 1)
+        {
+            return false;
+        }
+
+        float x = BitConverter.ToSingle(packet, 45);
+        float y = BitConverter.ToSingle(packet, 49);
+        float z = BitConverter.ToSingle(packet, 53);
+        int playerId = BitConverter.ToInt32(packet, 4);
+        int ownerId = BitConverter.ToInt32(packet, 37);
+        if (ownerId != playerId || BitConverter.ToUInt32(packet, 41) != 0)
+        {
+            return false;
+        }
+        for (int offset = 45; offset < PacketLength; offset += sizeof(float))
+        {
+            if (!float.IsFinite(BitConverter.ToSingle(packet, offset)))
+            {
+                return false;
+            }
+        }
+
+        placement = new BarricadePlacementContext(
+            playerId,
+            BitConverter.ToUInt32(packet, 28),
+            BitConverter.ToUInt32(packet, 33),
+            ownerId,
+            x,
+            y,
+            z);
+        return true;
     }
 
     public static short RandomItemSkill(
@@ -429,6 +522,41 @@ internal readonly struct ItemPickupContext
     }
 
     public short LiveRank { get; }
+
+    public float X { get; }
+
+    public float Y { get; }
+
+    public float Z { get; }
+}
+
+internal readonly struct BarricadePlacementContext
+{
+    public BarricadePlacementContext(
+        int playerId,
+        uint objectId,
+        uint tick,
+        int ownerId,
+        float x,
+        float y,
+        float z)
+    {
+        PlayerId = playerId;
+        ObjectId = objectId;
+        Tick = tick;
+        OwnerId = ownerId;
+        X = x;
+        Y = y;
+        Z = z;
+    }
+
+    public int PlayerId { get; }
+
+    public uint ObjectId { get; }
+
+    public uint Tick { get; }
+
+    public int OwnerId { get; }
 
     public float X { get; }
 

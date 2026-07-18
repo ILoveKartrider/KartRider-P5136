@@ -1502,8 +1502,10 @@ namespace KartRider
                         $"shop inventory contains an invalid item row in {selected.Path}");
                 }
 
-                // The shop table is the ownership authority.  Every P5136 shop
-                // kart must at least resolve through the client kart-name table;
+                // The shop table is the discovery catalog, not an unconditional
+                // ownership allowlist: it also contains UI-internal character
+                // assets.  The P5136 grant layer filters those rows.  Every shop
+                // kart must still resolve through the client kart-name table;
                 // four legitimate shop karts have no BodyParam and intentionally
                 // use the existing physics fallback when selected.
                 if (category == 3 && !names.ContainsKey(id))
@@ -2294,7 +2296,7 @@ namespace KartRider
                 .Count();
             int inventoryKarts = inventoryItems.Count(item => item.Category == 3);
             KartCatalogInventoryItem[] grantItems = inventoryItems
-                .Where(item => KartCatalogInventory.IsGrantCategory(item.Category))
+                .Where(KartCatalogInventory.IsGrantItem)
                 .ToArray();
             int grantCategories = grantItems
                 .Select(item => item.Category)

@@ -1,1 +1,1 @@
-namespace KartRider { public static class CompileTime { public static readonly string Time = "260716"; } }
+namespace KartRider { public static class CompileTime { public static readonly string Time = "260718"; } }

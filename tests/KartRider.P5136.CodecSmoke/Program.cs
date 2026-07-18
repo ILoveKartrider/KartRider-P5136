@@ -24,6 +24,96 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Xml.Linq;
 
+string randomTrackCatalogTestRoot =
+    Environment.GetEnvironmentVariable("P5136_TRACK_CATALOG_ROOT");
+if (!string.IsNullOrWhiteSpace(randomTrackCatalogTestRoot))
+{
+    Korean5136RandomTrackCatalog clientRandomCatalog =
+        Korean5136RandomTrackService.LoadClientCatalog(randomTrackCatalogTestRoot);
+    bool validChinaName = clientRandomCatalog.TryGetTrack(
+        "china_R01",
+        out Korean5136RandomTrackDefinition chinaTrack) &&
+        chinaTrack.KoreanName == "차이나 서안 병마용";
+    bool validReverseName = clientRandomCatalog.TryGetTrack(
+        "china_R02_rvs",
+        out Korean5136RandomTrackDefinition reverseTrack) &&
+        reverseTrack.KoreanName.StartsWith("[리버스] ", StringComparison.Ordinal);
+    bool validHot3Pools = clientRandomCatalog.TryGetPool(
+        0,
+        5,
+        out Korean5136RandomTrackPool speedHot3) &&
+        speedHot3.DefaultTrackIds.Count == 25 &&
+        clientRandomCatalog.TryGetPool(
+            1,
+            5,
+            out Korean5136RandomTrackPool itemHot3) &&
+        itemHot3.DefaultTrackIds.Count == 25;
+    bool validNewTrackPools = clientRandomCatalog.TryGetPool(
+        0,
+        8,
+        out Korean5136RandomTrackPool speedNewTracks) &&
+        speedNewTracks.DefaultTrackIds.Count == 20 &&
+        clientRandomCatalog.TryGetPool(
+            1,
+            8,
+            out Korean5136RandomTrackPool itemNewTracks) &&
+        itemNewTracks.DefaultTrackIds.Count == 11;
+    if (clientRandomCatalog.Tracks.Count < 280 ||
+        clientRandomCatalog.Pools.Count < 20 ||
+        !validChinaName ||
+        !validReverseName ||
+        !validHot3Pools ||
+        !validNewTrackPools ||
+        !clientRandomCatalog.TryGetPool(0, 33, out _) ||
+        !clientRandomCatalog.TryGetPool(1, 33, out _) ||
+        clientRandomCatalog.TryGetTrack("village_I13_rvs", out _) ||
+        clientRandomCatalog.Tracks.Any(track =>
+            track.KoreanName.Equals(track.Id, StringComparison.OrdinalIgnoreCase)))
+    {
+        Console.Error.WriteLine(
+            $"P5136 client random-track catalog failed: " +
+            $"tracks={clientRandomCatalog.Tracks.Count}, " +
+            $"pools={clientRandomCatalog.Pools.Count}");
+        return 1;
+    }
+
+    Korean5136RandomTrackService.Configure(
+        randomTrackCatalogTestRoot,
+        new RandomTrackConfiguration());
+    ClientBuildProfile previousRandomTrackBuild = ClientBuildProfiles.Active;
+    bool validClientSelection;
+    try
+    {
+        ClientBuildProfiles.SetActive(ClientBuildProfiles.Korean5136);
+        validClientSelection =
+            Korean5136RandomTrackService.TryGetCandidateHashes(
+                0,
+                5,
+                basicAiOnly: false,
+                out IReadOnlyList<uint> loadedHot3Hashes) &&
+            loadedHot3Hashes.Count == 25 &&
+            loadedHot3Hashes.Contains(RandomTrack.GetRandomTrack(
+                null,
+                "client-rho-random-smoke",
+                0,
+                5));
+    }
+    finally
+    {
+        ClientBuildProfiles.SetActive(previousRandomTrackBuild);
+    }
+    if (!validClientSelection)
+    {
+        Console.Error.WriteLine(
+            "P5136 client random-track source-to-selection integration failed.");
+        return 1;
+    }
+
+    Console.WriteLine(
+        $"P5136 read-only client random-track catalog passed: " +
+        $"tracks={clientRandomCatalog.Tracks.Count}, pools={clientRandomCatalog.Pools.Count}.");
+}
+
 string rhoCatalogTestRoot = Environment.GetEnvironmentVariable("P5136_RHO_CATALOG_ROOT");
 if (!string.IsNullOrWhiteSpace(rhoCatalogTestRoot))
 {
@@ -237,13 +327,23 @@ if (!string.IsNullOrWhiteSpace(rhoCatalogTestRoot))
                     actualGrantProfile,
                     slotChanger: 999,
                     preventItem: false);
+            ushort[] unsafeCharacterIds =
+            {
+                45, 47, 48, 52, 59, 116, 117, 124, 128, 130, 137, 144,
+                147, 149, 159, 175, 176, 184, 192, 193, 194, 195, 196,
+                197, 231, 245, 246, 247, 265, 301, 302, 333, 350, 376,
+                377, 391, 392, 396, 397
+            };
             var actualParts = actualGrant.Where(item =>
                 item.Category is >= 63 and <= 66).ToArray();
-            if (actualGrant.Count != 5674 ||
+            if (actualGrant.Count != 5635 ||
+                actualGrant.Count(item => item.Category == 1) != 342 ||
                 actualGrant.Count(item => item.Category == 3) != 1296 ||
                 actualGrant[0].Category != 21 ||
                 actualGrant[^1].Category != 3 ||
                 actualGrant.Any(item => item.Id == 0) ||
+                actualGrant.Any(item =>
+                    item.Category == 1 && unsafeCharacterIds.Contains(item.Id)) ||
                 actualPacketSizes.Any(size => size <= 0 || size > 100) ||
                 actualParts.Length != 320 ||
                 actualParts.Any(item => item.PartFlag != 1 || item.Grade is < 1 or > 4) ||
@@ -554,6 +654,10 @@ if (string.IsNullOrWhiteSpace(rhoCatalogTestRoot))
             File.Exists(Path.Combine(cleanInventoryProfile, "NewKart.xml")) ||
             firstGrant.Count < 5500 ||
             grantedKarts != 1298 ||
+            firstGrant.Count(item => item.Category == 1) != 95 ||
+            firstGrant.Any(item =>
+                item.Category == 1 &&
+                new ushort[] { 45, 47, 48, 52, 59 }.Contains(item.Id)) ||
             firstGrant[0].Category != 21 ||
             firstGrant[^1].Category != 3 ||
             !firstGrant.Any(item => item.Category == 3 && item.Id == 1450) ||
@@ -871,6 +975,29 @@ catch (InvalidOperationException)
 
 ClientBuildProfiles.SetActive(ClientBuildProfiles.Korean5136);
 
+RaceSettlementPacketKind[] p5136SettlementOrder =
+    MultyPlayer.GetSettlementPacketOrder(ClientBuild.Korean5136);
+RaceSettlementPacketKind[] modernSettlementOrder =
+    MultyPlayer.GetSettlementPacketOrder(ClientBuild.Modern);
+if (!p5136SettlementOrder.SequenceEqual(new[]
+    {
+        RaceSettlementPacketKind.GameNextStage,
+        RaceSettlementPacketKind.GameResult,
+        RaceSettlementPacketKind.GameControl
+    }) ||
+    !modernSettlementOrder.SequenceEqual(new[]
+    {
+        RaceSettlementPacketKind.GameControl,
+        RaceSettlementPacketKind.GameNextStage,
+        RaceSettlementPacketKind.GameResult
+    }))
+{
+    Console.Error.WriteLine("P5136 ceremony settlement packet ordering failed.");
+    return 1;
+}
+
+Console.WriteLine("P5136 ceremony result-before-control ordering smoke test passed.");
+
 if (!RunUdpEndpointBindingSmokeTests(out string udpBindingFailure))
 {
     Console.Error.WriteLine($"P5136 UDP generation first-bind failed: {udpBindingFailure}");
@@ -886,6 +1013,14 @@ if (!RunItemPickupContextSmokeTests(out string itemPickupFailure))
 }
 
 Console.WriteLine("P5136 item pickup rank/position parsing smoke test passed.");
+
+if (!RunBarricadePlacementSmokeTests(out string barricadeFailure))
+{
+    Console.Error.WriteLine($"P5136 barricade placement routing failed: {barricadeFailure}");
+    return 1;
+}
+
+Console.WriteLine("P5136 sender-inclusive barricade placement smoke test passed.");
 
 if (!Korean5136Protocol.TryResolveRoomGameType(67, out byte individualCombineType) ||
     individualCombineType != 1 ||
@@ -1340,6 +1475,18 @@ try
                 MiddleWeight = 1,
                 LowWeight = 1
             }
+        },
+        RandomTracks = new RandomTrackConfiguration
+        {
+            Pools = new List<RandomTrackPoolOverride>
+            {
+                new RandomTrackPoolOverride
+                {
+                    GameType = 0,
+                    Selector = 5,
+                    TrackIds = new List<string> { "village_R01", "china_R01" }
+                }
+            }
         }
     };
     ServerLauncherSettingsStore.Save(explicitSettings, settingsTestPath);
@@ -1356,7 +1503,14 @@ try
         reloaded.IndividualItemProbabilities[0].HighWeight != 7 ||
         reloaded.TeamItemProbabilities.Count != 1 ||
         reloaded.TeamItemProbabilities[0].ItemId != 10 ||
-        reloaded.TeamItemProbabilities[0].HighWeight != 9)
+        reloaded.TeamItemProbabilities[0].HighWeight != 9 ||
+        reloaded.RandomTracks.Pools.Count != 1 ||
+        reloaded.RandomTracks.Pools[0].GameType != 0 ||
+        reloaded.RandomTracks.Pools[0].Selector != 5 ||
+        !reloaded.RandomTracks.Pools[0].TrackIds.SequenceEqual(
+            new[] { "village_R01", "china_R01" }) ||
+        reloaded.ToServerOptions(ClientBuildProfiles.Korean5136)
+            .RandomTracks.Pools.Count != 1)
     {
         Console.Error.WriteLine("Server settings persistence round trip failed.");
         return 1;
@@ -1372,6 +1526,140 @@ finally
 }
 
 Console.WriteLine("Server/connector settings isolation smoke test passed.");
+
+Korean5136RandomTrackDefinition[] syntheticTracks =
+{
+    new Korean5136RandomTrackDefinition
+    {
+        Id = "village_R01",
+        KoreanName = "빌리지 고가의 질주",
+        GameType = "speed",
+        BasicAi = true,
+        Hash = Adler32Helper.GenerateAdler32_UNICODE("village_R01", 0)
+    },
+    new Korean5136RandomTrackDefinition
+    {
+        Id = "china_R01",
+        KoreanName = "차이나 서안 병마용",
+        GameType = "speed",
+        BasicAi = false,
+        Hash = Adler32Helper.GenerateAdler32_UNICODE("china_R01", 0)
+    },
+    new Korean5136RandomTrackDefinition
+    {
+        Id = "village_I04",
+        KoreanName = "빌리지 운하",
+        GameType = "item",
+        BasicAi = true,
+        Hash = Adler32Helper.GenerateAdler32_UNICODE("village_I04", 0)
+    }
+};
+Korean5136RandomTrackCatalog syntheticRandomCatalog =
+    new Korean5136RandomTrackCatalog(
+        Path.Combine(Path.GetTempPath(), "synthetic-track_common.rho"),
+        syntheticTracks,
+        new[]
+        {
+            new Korean5136RandomTrackPool
+            {
+                GameType = 0,
+                Selector = 5,
+                KoreanName = "스피드전 · 인기 랜덤 · 보통",
+                DefaultTrackIds = new[] { "village_R01", "china_R01" }
+            },
+            new Korean5136RandomTrackPool
+            {
+                GameType = 1,
+                Selector = 5,
+                KoreanName = "아이템전 · 인기 랜덤 · 보통",
+                DefaultTrackIds = new[] { "village_I04" }
+            }
+        });
+RandomTrackConfiguration syntheticRandomOverride = new RandomTrackConfiguration
+{
+    Pools = new List<RandomTrackPoolOverride>
+    {
+        new RandomTrackPoolOverride
+        {
+            GameType = 0,
+            Selector = 5,
+            TrackIds = new List<string> { "china_R01" }
+        }
+    }
+};
+Korean5136RandomTrackService.ConfigureForTesting(
+    syntheticRandomCatalog,
+    syntheticRandomOverride);
+uint chinaTrackHash = Adler32Helper.GenerateAdler32_UNICODE("china_R01", 0);
+if (!Korean5136RandomTrackService.TryGetCandidateHashes(
+        0,
+        5,
+        basicAiOnly: false,
+        out IReadOnlyList<uint> overriddenRandomTracks) ||
+    !overriddenRandomTracks.SequenceEqual(new[] { chinaTrackHash }) ||
+    RandomTrack.GetTrackName(chinaTrackHash) != "차이나 서안 병마용" ||
+    RandomTrack.GetRandomTrack(null, "random-smoke-override", 0, 5) != chinaTrackHash)
+{
+    Console.Error.WriteLine("P5136 manual random-track pool application failed.");
+    return 1;
+}
+
+Korean5136RandomTrackService.ConfigureForTesting(
+    syntheticRandomCatalog,
+    new RandomTrackConfiguration());
+if (!Korean5136RandomTrackService.TryGetCandidateHashes(
+        0,
+        5,
+        basicAiOnly: false,
+        out IReadOnlyList<uint> defaultRandomTracks) ||
+    defaultRandomTracks.Count != 2)
+{
+    Console.Error.WriteLine("P5136 client-default random-track pool resolution failed.");
+    return 1;
+}
+uint firstRandomTrack = RandomTrack.GetRandomTrack(
+    null,
+    "random-smoke-cycle",
+    0,
+    5);
+uint secondRandomTrack = RandomTrack.GetRandomTrack(
+    null,
+    "random-smoke-cycle",
+    0,
+    5);
+if (firstRandomTrack == secondRandomTrack ||
+    !defaultRandomTracks.Contains(firstRandomTrack) ||
+    !defaultRandomTracks.Contains(secondRandomTrack) ||
+    !RandomTrack.RandomName.TryGetValue(33, out string newLeagueName) ||
+    string.IsNullOrWhiteSpace(newLeagueName))
+{
+    Console.Error.WriteLine("P5136 random-track no-repeat/Korean selector names failed.");
+    return 1;
+}
+
+try
+{
+    new RandomTrackConfiguration
+    {
+        Pools = new List<RandomTrackPoolOverride>
+        {
+            new RandomTrackPoolOverride
+            {
+                GameType = 0,
+                Selector = 5,
+                TrackIds = new List<string> { "village_R01", "village_R01" }
+            }
+        }
+    }.Validate();
+    Console.Error.WriteLine("P5136 duplicate random-track id was accepted.");
+    return 1;
+}
+catch (InvalidDataException)
+{
+}
+
+Korean5136RandomTrackService.SetCatalogOverrideForTesting(syntheticRandomCatalog);
+Console.WriteLine("P5136 client/manual random-track pool smoke test passed.");
 
 ItemProbabilityService.Configure(
     AppContext.BaseDirectory,
@@ -1947,6 +2235,120 @@ static bool RunItemPickupContextSmokeTests(out string failure)
 
     failure = string.Empty;
     return true;
+}
+
+static bool RunBarricadePlacementSmokeTests(out string failure)
+{
+    (uint ObjectId, float X, float Y, float Z)[] expected =
+    {
+        (0x20001001, 12.5f, -8.25f, 3.75f),
+        (0x20001002, 18.125f, 4.5f, 6.25f),
+        (0x20001003, -2.75f, 11.5f, 9.125f)
+    };
+    byte[][] syntheticPackets = expected
+        .Select((placement, index) => CreateSyntheticBarricadePlacementPacket(
+            placement.ObjectId,
+            123456U + (uint)index,
+            placement.X,
+            placement.Y,
+            placement.Z))
+        .ToArray();
+
+    ClientBuildProfile previousProfile = ClientBuildProfiles.Active;
+    try
+    {
+        ClientBuildProfiles.SetActive(ClientBuildProfiles.Korean5136);
+        for (int index = 0; index < syntheticPackets.Length; index++)
+        {
+            byte[] packet = syntheticPackets[index];
+            if (!SlotData.TryResolveSenderInclusivePlacement(
+                    12,
+                    packet,
+                    out BarricadePlacementContext placement) ||
+                placement.PlayerId != 17 ||
+                placement.OwnerId != 17 ||
+                placement.ObjectId != expected[index].ObjectId ||
+                MathF.Abs(placement.X - expected[index].X) > 0.01f ||
+                MathF.Abs(placement.Y - expected[index].Y) > 0.01f ||
+                MathF.Abs(placement.Z - expected[index].Z) > 0.01f)
+            {
+                failure = $"synthetic placement {index} was not decoded correctly";
+                return false;
+            }
+        }
+
+        byte[] validPacket = syntheticPackets[0];
+        byte[] wrongHash = validPacket.ToArray();
+        wrongHash[20] ^= 0x01;
+        byte[] wrongLength = validPacket.ToArray();
+        wrongLength[16] = 72;
+        byte[] wrongOwner = validPacket.ToArray();
+        wrongOwner[37] ^= 0x01;
+        byte[] truncated = validPacket[..^1];
+        if (SlotData.TryResolveSenderInclusivePlacement(9, validPacket, out _) ||
+            SlotData.TryResolveSenderInclusivePlacement(12, wrongHash, out _) ||
+            SlotData.TryResolveSenderInclusivePlacement(12, wrongLength, out _) ||
+            SlotData.TryResolveSenderInclusivePlacement(12, wrongOwner, out _) ||
+            SlotData.TryResolveSenderInclusivePlacement(12, truncated, out _))
+        {
+            failure = "non-barricade or malformed data entered the sender-inclusive path";
+            return false;
+        }
+
+        ClientBuildProfiles.SetActive(ClientBuildProfiles.Modern);
+        if (SlotData.TryResolveSenderInclusivePlacement(12, validPacket, out _))
+        {
+            failure = "the P5136 sender-inclusive path leaked into the modern protocol";
+            return false;
+        }
+
+        failure = string.Empty;
+        return true;
+    }
+    finally
+    {
+        ClientBuildProfiles.SetActive(previousProfile);
+    }
+}
+
+static byte[] CreateSyntheticBarricadePlacementPacket(
+    uint objectId,
+    uint tick,
+    float x,
+    float y,
+    float z)
+{
+    byte[] packet = new byte[93];
+    void Write(int offset, byte[] value) => value.CopyTo(packet, offset);
+
+    Write(0, BitConverter.GetBytes(0x27C00574U));
+    Write(4, BitConverter.GetBytes(17));
+    Write(8, BitConverter.GetBytes(2));
+    packet[12] = 12;
+    packet[13] = 0x42;
+    Write(16, BitConverter.GetBytes(73U));
+    Write(20, BitConverter.GetBytes(0x1D8604A3U));
+    Write(24, BitConverter.GetBytes(0x2D0605C2U));
+    Write(28, BitConverter.GetBytes(objectId));
+    packet[32] = 1;
+    Write(33, BitConverter.GetBytes(tick));
+    Write(37, BitConverter.GetBytes(17));
+    Write(45, BitConverter.GetBytes(x));
+    Write(49, BitConverter.GetBytes(y));
+    Write(53, BitConverter.GetBytes(z));
+
+    float[] identityTransform =
+    {
+        1F, 0F, 0F,
+        0F, 1F, 0F,
+        0F, 0F, 1F
+    };
+    for (int index = 0; index < identityTransform.Length; index++)
+    {
+        Write(57 + index * sizeof(float), BitConverter.GetBytes(identityTransform[index]));
+    }
+
+    return packet;
 }
 
 static List<ItemProbabilityEntry> CreateRankSpecificItemTable()

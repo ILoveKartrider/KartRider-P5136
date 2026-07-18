@@ -77,6 +77,9 @@ public static class ClientServerRuntime
                     Team = ItemProbabilityConfiguration.CloneEntries(
                         snapshot.TeamItemProbabilities)
                 });
+            Korean5136RandomTrackService.Configure(
+                gameDirectory,
+                snapshot.RandomTracks);
             RouterListener.Start(snapshot);
         }
         catch

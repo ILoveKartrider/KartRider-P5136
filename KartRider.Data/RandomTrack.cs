@@ -25,7 +25,21 @@ namespace KartRider
     {
         public static Dictionary<uint, Track> TrackList = new Dictionary<uint, Track>();
         public static XDocument randomTrack = new XDocument();
-        public static Dictionary<uint, string> RandomName = new Dictionary<uint, string> { { 0, "全部随机" }, { 1, "专业竞速随机" }, { 3, "人气随机（极易）" }, { 4, "人气随机（简单）" }, { 5, "人气随机（普通）" }, { 6, "人气随机（困难）" }, { 7, "人气随机（极难）" }, { 8, "新图随机" }, { 30, "反方向随机" }, { 40, "竞速随机" } };
+        public static Dictionary<uint, string> RandomName = new Dictionary<uint, string>
+        {
+            { 0, "전체 랜덤" },
+            { 1, "클럽 랜덤" },
+            { 3, "인기 랜덤 (매우 쉬움)" },
+            { 4, "인기 랜덤 (쉬움)" },
+            { 5, "인기 랜덤 (보통)" },
+            { 6, "인기 랜덤 (어려움)" },
+            { 7, "인기 랜덤 (매우 어려움)" },
+            { 8, "신규 트랙 랜덤" },
+            { 23, "크레이지 랜덤" },
+            { 30, "리버스 랜덤" },
+            { 33, "새 리그 랜덤" },
+            { 40, "스피드 트랙 전용 랜덤" }
+        };
 
         public static string GameTrack = "village_R01";
 
@@ -46,7 +60,43 @@ namespace KartRider
                    track == 8 ||
                    track == 23 ||
                    track == 30 ||
+                   track == 33 ||
                    track == 40;
+        }
+
+        private static uint SelectConfiguredTrack(
+            string usedTracksName,
+            uint selector,
+            IReadOnlyList<uint> availableTracks)
+        {
+            lock (_usedTracks)
+            {
+                if (_lastTrack.TryGetValue(usedTracksName, out uint lastTrack) &&
+                    lastTrack != selector)
+                {
+                    _usedTracks.Remove(usedTracksName);
+                }
+                _lastTrack[usedTracksName] = selector;
+
+                if (!_usedTracks.TryGetValue(usedTracksName, out HashSet<uint> usedTracks))
+                {
+                    usedTracks = new HashSet<uint>();
+                    _usedTracks[usedTracksName] = usedTracks;
+                }
+
+                uint[] unusedTracks = availableTracks
+                    .Where(track => !usedTracks.Contains(track))
+                    .ToArray();
+                if (unusedTracks.Length == 0)
+                {
+                    usedTracks.Clear();
+                    unusedTracks = availableTracks.Distinct().ToArray();
+                }
+
+                uint selected = unusedTracks[Random.Shared.Next(unusedTracks.Length)];
+                usedTracks.Add(selected);
+                return selected;
+            }
         }
 
         public static string GetTrackName(uint trackId)
@@ -149,6 +199,24 @@ namespace KartRider
                 return Track;
             }
 
+            if (ClientBuildProfiles.Active.Build == ClientBuild.Korean5136 &&
+                Korean5136RandomTrackService.TryGetCandidateHashes(
+                    GameType,
+                    Track,
+                    ai,
+                    out IReadOnlyList<uint> configuredTracks))
+            {
+                uint selected = SelectConfiguredTrack(
+                    usedTracksName,
+                    Track,
+                    configuredTracks);
+                Console.WriteLine(
+                    "[랜덤 맵] {0} → {1}",
+                    GetTrackName(Track),
+                    GetTrackName(selected));
+                return selected;
+            }
+
             // 如果 TrackList 为空，直接返回默认 Track 的 hash，避免返回无效值
             if (TrackList == null || TrackList.Count == 0)
             {
@@ -221,6 +289,10 @@ namespace KartRider
             else if (Track == 30)
             {
                 RandomTrackSetRandomTrack = "reverse";
+            }
+            else if (Track == 33)
+            {
+                RandomTrackSetRandomTrack = "newLeagueRandom";
             }
             else if (Track == 40)
             {
@@ -377,8 +449,11 @@ namespace KartRider
         /// </summary>
         public static void ClearUsedTracks(string usedTracksName)
         {
-            _usedTracks.Remove(usedTracksName);
-            _lastTrack.Remove(usedTracksName);
+            lock (_usedTracks)
+            {
+                _usedTracks.Remove(usedTracksName);
+                _lastTrack.Remove(usedTracksName);
+            }
         }
 
         /// <summary>
@@ -386,8 +461,11 @@ namespace KartRider
         /// </summary>
         public static void ClearAllUsedTracks()
         {
-            _usedTracks.Clear();
-            _lastTrack.Clear();
+            lock (_usedTracks)
+            {
+                _usedTracks.Clear();
+                _lastTrack.Clear();
+            }
         }
     }
 }

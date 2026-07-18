@@ -36,6 +36,9 @@ namespace KartRider.Compatibility
         public List<ItemProbabilityEntry> TeamItemProbabilities { get; set; } =
             new List<ItemProbabilityEntry>();
 
+        public RandomTrackConfiguration RandomTracks { get; set; } =
+            new RandomTrackConfiguration();
+
         public void Validate(ClientBuildProfile profile = null)
         {
             if (BindAddress == null || BindAddress.AddressFamily != AddressFamily.InterNetwork)
@@ -74,6 +77,7 @@ namespace KartRider.Compatibility
                         TeamItemProbabilities)
                 },
                 allowEmptyTables: true);
+            (RandomTracks ?? new RandomTrackConfiguration()).Validate();
 
             _ = Path.GetFullPath(LogDirectory);
 
@@ -98,7 +102,8 @@ namespace KartRider.Compatibility
                 IndividualItemProbabilities = ItemProbabilityConfiguration.CloneEntries(
                     IndividualItemProbabilities),
                 TeamItemProbabilities = ItemProbabilityConfiguration.CloneEntries(
-                    TeamItemProbabilities)
+                    TeamItemProbabilities),
+                RandomTracks = (RandomTracks ?? new RandomTrackConfiguration()).Clone()
             };
         }
     }

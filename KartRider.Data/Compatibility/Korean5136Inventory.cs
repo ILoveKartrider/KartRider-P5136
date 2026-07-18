@@ -105,7 +105,7 @@ internal static class Korean5136Inventory
         var records = new List<RiderItemRecord>();
         foreach (KartCatalogInventoryItem item in catalog)
         {
-            if (!KartCatalogInventory.IsGrantCategory(item.Category))
+            if (!KartCatalogInventory.IsGrantItem(item))
             {
                 continue;
             }
