@@ -2743,9 +2743,25 @@ static string CreateTraceTestDirectory(string label)
 
 static void DeleteTraceTestDirectory(string directory)
 {
-    if (Directory.Exists(directory))
+    const int attempts = 40;
+    for (int attempt = 1; attempt <= attempts; attempt++)
     {
-        Directory.Delete(directory, true);
+        try
+        {
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, true);
+            }
+            return;
+        }
+        catch (IOException) when (attempt < attempts)
+        {
+            Thread.Sleep(25);
+        }
+        catch (UnauthorizedAccessException) when (attempt < attempts)
+        {
+            Thread.Sleep(25);
+        }
     }
 }
 
