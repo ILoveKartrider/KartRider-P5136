@@ -929,11 +929,13 @@ public static class Korean5136Protocol
 
     private static void SendRiderInfo(SessionGroup parent, InPacket packet)
     {
-        string nickname = EnsureNickname(parent);
+        EnsureNickname(parent);
+        uint requestedUserNo = packet.ReadUInt();
         packet.ReadInt();
-        packet.ReadInt();
-        string requestedNickname = packet.ReadString(false);
-        if (!string.Equals(requestedNickname, nickname, StringComparison.Ordinal))
+        string requestedNickname = requestedUserNo == 0
+            ? packet.ReadString(false)
+            : ClientManager.GetNickname(requestedUserNo);
+        if (!ClientManager.TryResolveKnownRider(requestedNickname, out string nickname))
         {
             using OutPacket failureResponse = new OutPacket("PrGetRiderInfo");
             failureResponse.WriteByte(0);
@@ -941,18 +943,15 @@ public static class Korean5136Protocol
             return;
         }
 
-        var rider = ProfileService.GetProfileConfig(nickname).Rider;
+        var config = ProfileService.GetProfileConfig(nickname);
+        var rider = config.Rider;
         using OutPacket response = new OutPacket("PrGetRiderInfo");
         response.WriteByte(1);
         response.WriteUInt(ClientManager.GetUserNO(nickname));
         response.WriteString(nickname);
         response.WriteString(nickname);
         WriteLegacyTime(response);
-        for (int i = 0; i < 32; i++)
-        {
-            response.WriteShort(0);
-        }
-        response.WriteByte(0);
+        WriteLegacyRiderItems(response, config.RiderItem);
         response.WriteString("");
         response.WriteInt(unchecked((int)rider.RP));
         response.WriteInt(0);
@@ -1119,7 +1118,6 @@ public static class Korean5136Protocol
             "PqServerSideUdpBindCheck",
             "PqVipGradeCheck",
             "LoRqUpdateRiderSchoolDataPacket",
-            "RmRiderTalkPacket",
             "PcReportStateInGame",
             "PqNeedTimerGiftEvent",
             "GameBoosterAddPacket",

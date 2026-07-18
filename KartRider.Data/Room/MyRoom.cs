@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net;
 using ExcData;
+using KartRider.Common.Network;
 using KartRider.Compatibility;
 using KartRider.IO.Packet;
 using Profile;
@@ -17,8 +19,8 @@ public class MyRoom
 
 public class MyRoomData
 {
-    public static Dictionary<string, MyRoom> MyRooms = new Dictionary<string, MyRoom>(StringComparer.Ordinal);
-    private static readonly Dictionary<string, string> _memberToOwner = new Dictionary<string, string>(StringComparer.Ordinal);
+    public static Dictionary<string, MyRoom> MyRooms = new Dictionary<string, MyRoom>(StringComparer.OrdinalIgnoreCase);
+    private static readonly Dictionary<string, string> _memberToOwner = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     private static readonly object _lock = new object();
 
     public static MyRoom GetOrCreateRoom(string owner)
@@ -31,7 +33,12 @@ public class MyRoomData
             if (!MyRooms.TryGetValue(owner, out var room))
             {
                 room = new MyRoom();
+                room.Players[0] = owner;
                 MyRooms[owner] = room;
+            }
+            else if (string.IsNullOrEmpty(room.Players[0]))
+            {
+                room.Players[0] = owner;
             }
             return room;
         }
@@ -39,69 +46,90 @@ public class MyRoomData
 
     public static bool TryEnterMyRoom(string owner, string member)
     {
+        return TryEnterMyRoom(owner, member, true);
+    }
+
+    private static bool TryEnterMyRoom(string owner, string member, bool broadcast)
+    {
         if (string.IsNullOrEmpty(owner) || string.IsNullOrEmpty(member))
             return false;
 
-        if (owner != member && !ClientManager.NicknameToUserNO.ContainsKey(owner))
+        if (!ClientManager.TryResolveKnownRider(owner, out owner) ||
+            !ClientManager.TryResolveKnownRider(member, out member))
+        {
+            return false;
+        }
+
+        if (!string.Equals(owner, member, StringComparison.OrdinalIgnoreCase) &&
+            ClientManager.GetParent(owner) == null)
             return false;
 
         string previousOwner = null;
-        bool added = false;
 
         lock (_lock)
         {
-            if (_memberToOwner.TryGetValue(member, out previousOwner))
-            {
-                if (previousOwner == owner)
-                {
-                    return true;
-                }
-
-                RemoveMemberFromRoom(previousOwner, member);
-            }
+            _memberToOwner.TryGetValue(member, out previousOwner);
 
             var room = GetOrCreateRoom(owner);
             if (room == null)
                 return false;
 
-            if (owner == member)
+            int targetSlot = -1;
+            if (string.Equals(owner, member, StringComparison.OrdinalIgnoreCase))
             {
-                for (int i = 1; i < 8; i++)
-                {
-                    if (room.Players[i] == member)
-                        room.Players[i] = null;
-                }
-
-                room.Players[0] = member;
-                added = true;
+                targetSlot = 0;
             }
             else
             {
-                for (int i = 0; i < 8; i++)
+                for (int i = 1; i < room.Players.Length; i++)
                 {
-                    if (room.Players[i] == member)
-                        return true;
+                    if (string.Equals(room.Players[i], member, StringComparison.OrdinalIgnoreCase))
+                    {
+                        targetSlot = i;
+                        break;
+                    }
                 }
 
-                for (int i = 1; i < 8; i++)
+                if (targetSlot < 0)
                 {
-                    if (room.Players[i] == null)
+                    for (int i = 1; i < room.Players.Length; i++)
                     {
-                        room.Players[i] = member;
-                        _memberToOwner[member] = owner;
-                        added = true;
-                        break;
+                        if (string.IsNullOrEmpty(room.Players[i]))
+                        {
+                            targetSlot = i;
+                            break;
+                        }
                     }
                 }
             }
 
-            if (!added)
+            // Do not disturb the current room if the destination is full.
+            if (targetSlot < 0)
                 return false;
 
+            if (!string.IsNullOrEmpty(previousOwner) &&
+                !string.Equals(previousOwner, owner, StringComparison.OrdinalIgnoreCase))
+            {
+                _memberToOwner.Remove(member);
+                RemoveMemberFromRoom(previousOwner, member);
+            }
+
+            for (int i = 0; i < room.Players.Length; i++)
+            {
+                if (i != targetSlot &&
+                    string.Equals(room.Players[i], member, StringComparison.OrdinalIgnoreCase))
+                {
+                    room.Players[i] = null;
+                }
+            }
+            room.Players[targetSlot] = member;
             _memberToOwner[member] = owner;
         }
 
-        if (!string.IsNullOrEmpty(previousOwner) && !string.Equals(previousOwner, owner, StringComparison.Ordinal))
+        if (!broadcast)
+            return true;
+
+        if (!string.IsNullOrEmpty(previousOwner) && !string.Equals(previousOwner, owner, StringComparison.OrdinalIgnoreCase))
         {
             BroadcastRoomSlotData(previousOwner);
         }
@@ -122,8 +150,8 @@ public class MyRoomData
             if (!_memberToOwner.TryGetValue(member, out owner))
                 return false;
 
-            removed = RemoveMemberFromRoom(owner, member);
             _memberToOwner.Remove(member);
+            removed = RemoveMemberFromRoom(owner, member);
         }
 
         if (removed)
@@ -144,15 +172,16 @@ public class MyRoomData
         bool removed = false;
         for (int i = 0; i < 8; i++)
         {
-            if (room.Players[i] == member)
+            if (string.Equals(room.Players[i], member, StringComparison.OrdinalIgnoreCase))
             {
-                room.Players[i] = null;
+                room.Players[i] = i == 0 ? owner : null;
                 removed = true;
                 break;
             }
         }
 
-        if (removed && IsRoomEmpty(room))
+        if (removed && !_memberToOwner.Values.Any(value =>
+            string.Equals(value, owner, StringComparison.OrdinalIgnoreCase)))
         {
             MyRooms.Remove(owner);
         }
@@ -186,8 +215,13 @@ public class MyRoomData
             var result = new List<string>(8);
             for (int i = 0; i < 8; i++)
             {
-                if (!string.IsNullOrEmpty(room.Players[i]))
-                    result.Add(room.Players[i]);
+                string member = room.Players[i];
+                if (!string.IsNullOrEmpty(member) &&
+                    _memberToOwner.TryGetValue(member, out string memberOwner) &&
+                    string.Equals(memberOwner, owner, StringComparison.OrdinalIgnoreCase))
+                {
+                    result.Add(member);
+                }
             }
             return result.ToArray();
         }
@@ -198,28 +232,28 @@ public class MyRoomData
         if (string.IsNullOrEmpty(owner))
             return;
 
-        MyRoom room;
+        string[] players;
+        string[] recipients;
         lock (_lock)
         {
-            if (!MyRooms.TryGetValue(owner, out room))
+            if (!MyRooms.TryGetValue(owner, out MyRoom room))
                 return;
+
+            players = (string[])room.Players.Clone();
+            recipients = players
+                .Where(member => !string.IsNullOrEmpty(member) &&
+                    _memberToOwner.TryGetValue(member, out string memberOwner) &&
+                    string.Equals(memberOwner, owner, StringComparison.OrdinalIgnoreCase))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
         }
 
-        if (room == null)
-            return;
-
-        var sent = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        for (int i = 0; i < 8; i++)
+        foreach (string member in recipients)
         {
-            string member = room.Players[i];
-            if (string.IsNullOrEmpty(member) || sent.Contains(member))
-                continue;
-
-            sent.Add(member);
             SessionGroup session = ClientManager.GetParent(member);
             if (session != null)
             {
-                RmSlotDataPacket(session, member);
+                SendRoomSlotDataPacket(session, players);
             }
         }
     }
@@ -228,7 +262,9 @@ public class MyRoomData
     {
         string owner = string.IsNullOrEmpty(nickname) ? Nickname : nickname;
 
-        if (!string.Equals(owner, Nickname, StringComparison.OrdinalIgnoreCase) && !ClientManager.NicknameToUserNO.ContainsKey(owner))
+        if (!ClientManager.TryResolveKnownRider(owner, out owner) ||
+            (!string.Equals(owner, Nickname, StringComparison.OrdinalIgnoreCase) &&
+             ClientManager.GetParent(owner) == null))
         {
             ChRpEnterMyRoomPacket(Parent, 3);
             return;
@@ -236,7 +272,8 @@ public class MyRoomData
 
         EnsureProfileLoaded(owner);
 
-        if (!TryEnterMyRoom(owner, Nickname))
+        string previousOwner = GetRoomOwnerByNickname(Nickname);
+        if (!TryEnterMyRoom(owner, Nickname, false))
         {
             ChRpEnterMyRoomPacket(Parent, 1);
             return;
@@ -260,6 +297,13 @@ public class MyRoomData
             outPacket.WriteShort(ownerConfig.MyRoom.MyRoomKart2);
             Parent.Client.Send(outPacket);
         }
+
+        if (!string.IsNullOrEmpty(previousOwner) &&
+            !string.Equals(previousOwner, owner, StringComparison.OrdinalIgnoreCase))
+        {
+            BroadcastRoomSlotData(previousOwner);
+        }
+        BroadcastRoomSlotData(owner);
     }
 
     public static void ChRpEnterMyRoomPacket(SessionGroup Parent, byte errorCode = 3)
@@ -306,52 +350,50 @@ public class MyRoomData
 
     public static void RmRiderTalkPacket(string Nickname, string Message)
     {
-        string owner = GetRoomOwnerByNickname(Nickname);
-        if (string.IsNullOrEmpty(owner))
+        if (string.IsNullOrEmpty(Nickname) || Message == null)
             return;
 
-        MyRoom room;
+        string owner;
+        string[] members;
+        int slotIndex = -1;
         lock (_lock)
         {
-            if (!MyRooms.TryGetValue(owner, out room))
-                return;
-        }
-
-        if (room == null)
-            return;
-
-        int slotIndex = -1;
-        for (int i = 0; i < 8; i++)
-        {
-            if (string.Equals(room.Players[i], Nickname, StringComparison.OrdinalIgnoreCase))
+            if (!_memberToOwner.TryGetValue(Nickname, out owner) ||
+                !MyRooms.TryGetValue(owner, out MyRoom room))
             {
-                slotIndex = i;
-                break;
+                return;
             }
-        }
 
-        if (slotIndex < 0)
-            return;
+            for (int i = 0; i < room.Players.Length; i++)
+            {
+                if (string.Equals(room.Players[i], Nickname, StringComparison.OrdinalIgnoreCase))
+                {
+                    slotIndex = i;
+                    break;
+                }
+            }
+
+            if (slotIndex < 0)
+                return;
+
+            // The sender renders its own input locally. Echo it only to the other
+            // sessions that are still mapped to this room.
+            members = room.Players
+                .Where(member => !string.IsNullOrEmpty(member) &&
+                    !string.Equals(member, Nickname, StringComparison.OrdinalIgnoreCase) &&
+                    _memberToOwner.TryGetValue(member, out string memberOwner) &&
+                    string.Equals(memberOwner, owner, StringComparison.OrdinalIgnoreCase))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
 
         using (OutPacket outPacket = new OutPacket("RmRiderEchoPacket"))
         {
             outPacket.WriteInt(slotIndex);
             outPacket.WriteString(Message);
-            var sent = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            for (int i = 0; i < 8; i++)
+            foreach (string member in members)
             {
-                string member = room.Players[i];
-                if (string.IsNullOrEmpty(member) || string.Equals(member, Nickname, StringComparison.OrdinalIgnoreCase))
-                    continue;
-
-                if (!sent.Add(member))
-                    continue;
-
-                SessionGroup session = ClientManager.GetParent(member);
-                if (session != null)
-                {
-                    session.Client.Send(outPacket);
-                }
+                ClientManager.GetParent(member)?.Client.Send(outPacket);
             }
         }
     }
@@ -363,11 +405,67 @@ public class MyRoomData
 
         lock (_lock)
         {
-            if (MyRooms.ContainsKey(nickname))
-                return nickname;
             if (_memberToOwner.TryGetValue(nickname, out var owner))
                 return owner;
             return null;
+        }
+    }
+
+    public static void RmCharPosPacket(string nickname, int claimedSlot, float[] transform)
+    {
+        if (string.IsNullOrEmpty(nickname) || transform == null || transform.Length != 6)
+            return;
+
+        string owner;
+        string[] members;
+        int actualSlot = -1;
+        lock (_lock)
+        {
+            if (!_memberToOwner.TryGetValue(nickname, out owner) ||
+                !MyRooms.TryGetValue(owner, out MyRoom room))
+            {
+                return;
+            }
+
+            for (int i = 0; i < room.Players.Length; i++)
+            {
+                if (string.Equals(room.Players[i], nickname, StringComparison.OrdinalIgnoreCase))
+                {
+                    actualSlot = i;
+                    break;
+                }
+            }
+            if (actualSlot < 0 || actualSlot != claimedSlot)
+            {
+                PacketTrace.LogEvent(
+                    "TCP",
+                    "MYROOM-POS-DROP",
+                    null,
+                    null,
+                    nickname,
+                    $"owner={owner}; claimedSlot={claimedSlot}; actualSlot={actualSlot}");
+                return;
+            }
+
+            members = room.Players
+                .Where(member => !string.IsNullOrEmpty(member) &&
+                    !string.Equals(member, nickname, StringComparison.OrdinalIgnoreCase) &&
+                    _memberToOwner.TryGetValue(member, out string memberOwner) &&
+                    string.Equals(memberOwner, owner, StringComparison.OrdinalIgnoreCase))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+
+        using (OutPacket outPacket = new OutPacket("RmCharPosPacket"))
+        {
+            outPacket.WriteInt(actualSlot);
+            foreach (float value in transform)
+                outPacket.WriteFloat(value);
+
+            foreach (string member in members)
+            {
+                ClientManager.GetParent(member)?.Client.Send(outPacket);
+            }
         }
     }
 
@@ -440,23 +538,28 @@ public class MyRoomData
 
     public static void RmSlotDataPacket(SessionGroup Parent, string Nickname)
     {
+        string[] players = null;
+        string owner = GetRoomOwnerByNickname(Nickname);
+        lock (_lock)
+        {
+            if (!string.IsNullOrEmpty(owner) && MyRooms.TryGetValue(owner, out var foundRoom))
+            {
+                players = (string[])foundRoom.Players.Clone();
+            }
+        }
+
+        SendRoomSlotDataPacket(Parent, players);
+    }
+
+    private static void SendRoomSlotDataPacket(SessionGroup Parent, string[] players)
+    {
         using (OutPacket outPacket = new OutPacket("RmSlotDataPacket"))
         {
-            string owner = GetRoomOwnerByNickname(Nickname);
-            MyRoom room = null;
-            lock (_lock)
-            {
-                if (!string.IsNullOrEmpty(owner) && MyRooms.TryGetValue(owner, out var foundRoom))
-                {
-                    room = foundRoom;
-                }
-            }
-
-            if (room != null)
+            if (players != null)
             {
                 for (int i = 0; i < 8; i++)
                 {
-                    WritePlayerSlot(outPacket, room.Players[i]);
+                    WritePlayerSlot(outPacket, players[i]);
                 }
             }
             else

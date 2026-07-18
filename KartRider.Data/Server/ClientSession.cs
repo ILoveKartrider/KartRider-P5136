@@ -566,7 +566,9 @@ namespace KartRider
                     }
                     else if (hash == Adler32Helper.GenerateAdler32_ASCII("ChReRqEnterMyRoomPacket", 0) || hash == Adler32Helper.GenerateAdler32_ASCII("ChRqEnterRandomMyRoomPacket", 0))
                     {
-                        var availableNicknames = ClientManager.NicknameToUserNO.Keys.Where(n => n != this.Parent.Client.Nickname).ToList();
+                        var availableNicknames = ClientManager.GetOnlinePlayers()
+                            .Where(n => !string.Equals(n, this.Parent.Client.Nickname, StringComparison.OrdinalIgnoreCase))
+                            .ToList();
                         if (availableNicknames.Count == 0)
                         {
                             MyRoomData.ChRpEnterMyRoomPacket(this.Parent, 5);
@@ -581,6 +583,8 @@ namespace KartRider
                     else if (hash == Adler32Helper.GenerateAdler32_ASCII("ChRqEnterMyRoomPacket", 0))
                     {
                         string nickname = iPacket.ReadString(false);
+                        if (iPacket.Available >= 4)
+                            iPacket.ReadInt();
                         MyRoomData.ChRpEnterMyRoomPacket(this.Parent, this.Parent.Client.Nickname, nickname);
                         return;
                     }
@@ -596,7 +600,16 @@ namespace KartRider
                     }
                     else if (hash == Adler32Helper.GenerateAdler32_ASCII("RmNotiMyRoomInfoPacket", 0))
                     {
-                        var myRoomConfig = ProfileService.GetProfileConfig(this.Parent.Client.Nickname);
+                        string roomOwner = MyRoomData.GetRoomOwnerByNickname(this.Parent.Client.Nickname);
+                        if (string.IsNullOrEmpty(roomOwner) ||
+                            !string.Equals(roomOwner, this.Parent.Client.Nickname, StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (!string.IsNullOrEmpty(roomOwner))
+                                MyRoomData.RmNotiMyRoomInfoPacket(this.Parent, roomOwner);
+                            return;
+                        }
+
+                        var myRoomConfig = ProfileService.GetProfileConfig(roomOwner);
                         myRoomConfig.MyRoom.MyRoom = iPacket.ReadShort();
                         myRoomConfig.MyRoom.MyRoomBGM = iPacket.ReadByte();
                         myRoomConfig.MyRoom.UseRoomPwd = iPacket.ReadByte();
@@ -608,8 +621,17 @@ namespace KartRider
                         myRoomConfig.MyRoom.ItemPwd = iPacket.ReadString(false);
                         myRoomConfig.MyRoom.MyRoomKart1 = iPacket.ReadShort();
                         myRoomConfig.MyRoom.MyRoomKart2 = iPacket.ReadShort();
-                        ProfileService.Save(this.Parent.Client.Nickname, myRoomConfig);
-                        MyRoomData.RmNotiMyRoomInfoPacket(this.Parent, this.Parent.Client.Nickname);
+                        ProfileService.Save(roomOwner, myRoomConfig);
+                        MyRoomData.RmNotiMyRoomInfoPacket(this.Parent, roomOwner);
+                        return;
+                    }
+                    else if (hash == Adler32Helper.GenerateAdler32_ASCII("RmCharPosPacket", 0))
+                    {
+                        int slot = iPacket.ReadInt();
+                        float[] transform = new float[6];
+                        for (int i = 0; i < transform.Length; i++)
+                            transform[i] = iPacket.ReadFloat();
+                        MyRoomData.RmCharPosPacket(this.Parent.Client.Nickname, slot, transform);
                         return;
                     }
                     else if (hash == Adler32Helper.GenerateAdler32_ASCII("ChRqSecedeMyRoomPacket", 0))

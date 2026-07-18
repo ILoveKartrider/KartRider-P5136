@@ -4,6 +4,7 @@ using Profile;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Net;
 using System.Security.Cryptography;
@@ -916,6 +917,60 @@ public static class ClientManager
 
     public static string GetNickname(uint userNo) =>
         UserNOToNickname.TryGetValue(userNo, out string nickname) ? nickname : null;
+
+    public static bool TryResolveKnownRider(string requestedNickname, out string nickname)
+    {
+        nickname = string.Empty;
+        if (!ClientIdentityValidator.TryNormalize(
+            requestedNickname,
+            FileName.ProfileDir,
+            out string normalizedNickname,
+            out _))
+        {
+            return false;
+        }
+
+        if (NicknameToUserNO.TryGetValue(normalizedNickname, out uint userNo) &&
+            UserNOToNickname.TryGetValue(userNo, out string mappedNickname))
+        {
+            nickname = mappedNickname;
+            return true;
+        }
+
+        try
+        {
+            if (!Directory.Exists(FileName.ProfileDir))
+                return false;
+
+            string profileDirectory = Directory
+                .EnumerateDirectories(FileName.ProfileDir)
+                .FirstOrDefault(path => string.Equals(
+                    Path.GetFileName(path),
+                    normalizedNickname,
+                    StringComparison.OrdinalIgnoreCase));
+            if (string.IsNullOrEmpty(profileDirectory) ||
+                !File.Exists(Path.Combine(profileDirectory, "Launcher.json")))
+            {
+                return false;
+            }
+
+            nickname = Path.GetFileName(profileDirectory);
+            GetUserNO(nickname);
+            if (!FileName.FileNames.ContainsKey(nickname))
+                FileName.Load(nickname);
+            return true;
+        }
+        catch (IOException)
+        {
+            nickname = string.Empty;
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            nickname = string.Empty;
+            return false;
+        }
+    }
 
     public static bool TryGetActiveIdentity(
         uint userNo,
