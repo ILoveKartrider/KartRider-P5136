@@ -280,6 +280,12 @@ namespace KartRider
         public static void GetRider(string Nickname, OutPacket outPacket)
         {
             var config = ProfileService.GetProfileConfig(Nickname);
+            if (ClientBuildProfiles.Active.Build == ClientBuild.Korean5136)
+            {
+                Korean5136Protocol.WriteRiderItemSnapshot(outPacket, config.RiderItem);
+                return;
+            }
+
             outPacket.WriteUShort(config.RiderItem.Set_Character);
             outPacket.WriteUShort(config.RiderItem.Set_Paint);
             outPacket.WriteUShort(config.RiderItem.Set_Kart);
@@ -313,15 +319,12 @@ namespace KartRider
             outPacket.WriteByte(config.RiderItem.Set_Unknown4);
             outPacket.WriteUShort(config.RiderItem.Set_KartCoating);
             outPacket.WriteUShort(config.RiderItem.Set_KartTailLamp);
-            if (ClientBuildProfiles.Active.Build != ClientBuild.Korean5136)
-            {
-                // These five equipment fields were appended after P5136.
-                outPacket.WriteUShort(config.RiderItem.Set_slotBg);
-                outPacket.WriteUShort(config.RiderItem.Set_KartCoating12);
-                outPacket.WriteUShort(config.RiderItem.Set_KartTailLamp12);
-                outPacket.WriteUShort(config.RiderItem.Set_KartBoosterEffect12);
-                outPacket.WriteUShort(config.RiderItem.Set_Unknown5);
-            }
+            // These five equipment fields were appended after P5136.
+            outPacket.WriteUShort(config.RiderItem.Set_slotBg);
+            outPacket.WriteUShort(config.RiderItem.Set_KartCoating12);
+            outPacket.WriteUShort(config.RiderItem.Set_KartTailLamp12);
+            outPacket.WriteUShort(config.RiderItem.Set_KartBoosterEffect12);
+            outPacket.WriteUShort(config.RiderItem.Set_Unknown5);
         }
 
         public static void PrGetRiderInfo(string nickname, SessionGroup Parent)

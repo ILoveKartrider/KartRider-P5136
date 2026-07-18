@@ -31,12 +31,15 @@
   <ItemGroup>
     <Compile Remove="KartRider.Connector\**\*.cs" />
     <Compile Remove="Legacy\**\*.cs" />
+    <Compile Remove="PhysicsSim\**\*.cs" />
     <Compile Remove="tests\**\*.cs" />
     <EmbeddedResource Remove="KartRider.Connector\**\*" />
     <EmbeddedResource Remove="Legacy\**\*" />
+    <EmbeddedResource Remove="PhysicsSim\**\*" />
     <EmbeddedResource Remove="tests\**\*" />
     <None Remove="KartRider.Connector\**\*" />
     <None Remove="Legacy\**\*" />
+    <None Remove="PhysicsSim\**\*" />
     <None Remove="tests\**\*" />
   </ItemGroup>
 </Project>

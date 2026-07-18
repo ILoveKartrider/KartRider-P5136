@@ -1,6 +1,7 @@
 using KartLibrary.Data;
 using KartRider.Common.Data;
 using KartRider.Common.Network;
+using KartRider.Common.Security;
 using KartRider.Common.Utilities;
 using KartRider;
 using KartRider.Compatibility;
@@ -339,6 +340,7 @@ if (!string.IsNullOrWhiteSpace(rhoCatalogTestRoot))
             if (actualGrant.Count != 5635 ||
                 actualGrant.Count(item => item.Category == 1) != 342 ||
                 actualGrant.Count(item => item.Category == 3) != 1296 ||
+                actualGrant.Any(item => item.Category == 3 && item.Serial != 1) ||
                 actualGrant[0].Category != 21 ||
                 actualGrant[^1].Category != 3 ||
                 actualGrant.Any(item => item.Id == 0) ||
@@ -346,6 +348,7 @@ if (!string.IsNullOrWhiteSpace(rhoCatalogTestRoot))
                     item.Category == 1 && unsafeCharacterIds.Contains(item.Id)) ||
                 actualPacketSizes.Any(size => size <= 0 || size > 100) ||
                 actualParts.Length != 320 ||
+                actualParts.Any(item => item.Serial != 0) ||
                 actualParts.Any(item => item.PartFlag != 1 || item.Grade is < 1 or > 4) ||
                 actualGrant.Any(item =>
                     (item.Category < 63 || item.Category > 66) && item.PartFlag != 0) ||
@@ -662,9 +665,11 @@ if (string.IsNullOrWhiteSpace(rhoCatalogTestRoot))
             firstGrant[^1].Category != 3 ||
             !firstGrant.Any(item => item.Category == 3 && item.Id == 1450) ||
             !firstGrant.Any(item => item.Category == 3 && item.Id == 1453) ||
+            firstGrant.Any(item => item.Category == 3 && item.Serial != 1) ||
             firstGrant.Any(item => item.Id == 0) ||
             syntheticPacketSizes.Any(size => size <= 0 || size > 100) ||
             syntheticParts.Length != 320 ||
+            syntheticParts.Any(item => item.Serial != 0) ||
             syntheticParts.Any(item => item.PartFlag != 1 || item.Grade is < 1 or > 4) ||
             firstGrant.First(item => item.Category == 1 && item.Id == 1).Amount != 1 ||
             firstGrant.First(item => item.Category == 7 && item.Id == 3).Amount != 1 ||
@@ -840,6 +845,159 @@ if (!plantSnapshotValid)
     return 1;
 }
 Console.WriteLine("P5136 client plant-part performance snapshot passed (91/91 entries).");
+
+bool flyingPetSnapshotValid =
+    Korean5136FlyingPetPerformance.EntryCount ==
+        Korean5136FlyingPetPerformance.ExpectedEntryCount &&
+    Korean5136FlyingPetPerformance.TryGet(
+        32,
+        out Korean5136FlyingPetPerformance.Spec flyingPet32) &&
+    flyingPet32.StartForwardAccelForceItem == 1300f &&
+    flyingPet32.StartForwardAccelForceSpeed == 1300f &&
+    Korean5136FlyingPetPerformance.TryGet(
+        83,
+        out Korean5136FlyingPetPerformance.Spec flyingPet83) &&
+    flyingPet83.ForwardAccelForce == 3.5f &&
+    flyingPet83.ItemBoosterTime == 300f &&
+    !Korean5136FlyingPetPerformance.TryGet(20, out _);
+
+ClientBuildProfile previousFlyingPetBuild = ClientBuildProfiles.Active;
+bool flyingPetRuntimeValid;
+try
+{
+    ClientBuildProfiles.SetActive(ClientBuildProfiles.Korean5136);
+    var flyingPetRuntime = new FlyingPetSpec();
+    flyingPetRuntime.FlyingPet_Spec(83);
+    flyingPetRuntimeValid =
+        flyingPetRuntime.ForwardAccelForce == 3.5f &&
+        flyingPetRuntime.ItemBoosterTime == 300f &&
+        flyingPetRuntime.StartForwardAccelForceItem == 0f &&
+        flyingPetRuntime.StartForwardAccelForceSpeed == 0f;
+}
+finally
+{
+    ClientBuildProfiles.SetActive(previousFlyingPetBuild);
+}
+
+if (!flyingPetSnapshotValid || !flyingPetRuntimeValid)
+{
+    Console.Error.WriteLine("P5136 flying-pet performance integration failed.");
+    return 1;
+}
+Console.WriteLine("P5136 flying-pet performance snapshot passed (80/80 entries).");
+
+var normalPetEquipment = new RiderItemData
+{
+    Set_Kart = 1401,
+    Set_Decal = 0x120D,
+    Set_Pet = 30008,
+    Set_FlyingPet = 83,
+    Set_KartSN = 0,
+    Set_Unknown4 = 0x5A,
+    Set_KartCoating = 0x2211,
+    Set_KartTailLamp = 0x4433
+};
+using (var normalPetSnapshot = new OutPacket())
+{
+    Korean5136Protocol.WriteRiderItemSnapshot(normalPetSnapshot, normalPetEquipment);
+    byte[] snapshot = normalPetSnapshot.ToArray();
+    if (snapshot.Length != Korean5136Protocol.RiderItemSnapshotWireLength ||
+        BitConverter.ToUInt16(snapshot, 24) != normalPetEquipment.Set_Decal ||
+        BitConverter.ToUInt16(snapshot, Korean5136Protocol.RiderItemPetOffset) !=
+            normalPetEquipment.Set_Pet ||
+        BitConverter.ToUInt16(snapshot, 28) != normalPetEquipment.Set_FlyingPet ||
+        BitConverter.ToUInt16(snapshot, 58) != 1 ||
+        snapshot[60] != normalPetEquipment.Set_Unknown4 ||
+        BitConverter.ToUInt16(snapshot, 61) != normalPetEquipment.Set_KartCoating ||
+        BitConverter.ToUInt16(snapshot, 63) != normalPetEquipment.Set_KartTailLamp)
+    {
+        Console.Error.WriteLine("P5136 normal-pet equipment snapshot layout failed.");
+        return 1;
+    }
+}
+Console.WriteLine("P5136 normal-pet equipment snapshot passed (pet offset 26/65 bytes).");
+
+string equipmentStateRoot = Path.Combine(
+    Path.GetTempPath(),
+    $"P5136-EquipmentState-{Environment.ProcessId}-{Guid.NewGuid():N}");
+string originalEquipmentProfileDirectory = FileName.ProfileDir;
+try
+{
+    Directory.CreateDirectory(equipmentStateRoot);
+    string plantFixturePath = Path.Combine(equipmentStateRoot, "PlantData.json");
+    File.WriteAllText(
+        plantFixturePath,
+        "[{\"ID\":1401,\"SN\":0,\"Engine\":43,\"EngineID\":5," +
+        "\"Handle\":44,\"HandleID\":2,\"Wheel\":45,\"WheelID\":14," +
+        "\"Kit\":46,\"KitID\":6}]");
+    string partsFixturePath = Path.Combine(equipmentStateRoot, "PartsData.xml");
+    new XDocument(
+        new XElement(
+            "PartsData",
+            new XElement(
+                "Kart",
+                new XAttribute("id", 1401),
+                new XAttribute("sn", 0),
+                new XAttribute("Item_Id1", 0),
+                new XAttribute("Grade1", 0),
+                new XAttribute("PartsValue1", 0),
+                new XAttribute("Item_Id2", 0),
+                new XAttribute("Grade2", 0),
+                new XAttribute("PartsValue2", 0),
+                new XAttribute("Item_Id3", 0),
+                new XAttribute("Grade3", 0),
+                new XAttribute("PartsValue3", 0),
+                new XAttribute("Item_Id4", 0),
+                new XAttribute("Grade4", 0),
+                new XAttribute("PartsValue4", 0),
+                new XAttribute("partsCoating", 0),
+                new XAttribute("partsTailLamp", 0))))
+        .Save(partsFixturePath);
+
+    IReadOnlyList<(short Id, short Serial)> plantExcSnapshot =
+        Korean5136Inventory.BuildPlantExcSnapshotForTesting(plantFixturePath);
+    IReadOnlyList<(short Id, short Serial)> partsExcSnapshot =
+        Korean5136Inventory.BuildPartsExcSnapshotForTesting(partsFixturePath);
+    if (plantExcSnapshot.Count != 1 ||
+        plantExcSnapshot[0] != ((short)1401, (short)1) ||
+        partsExcSnapshot.Count != 1 ||
+        partsExcSnapshot[0] != ((short)1401, (short)1))
+    {
+        Console.Error.WriteLine("P5136 equipment-state kart serial normalization failed.");
+        return 1;
+    }
+
+    FileName.ProfileDir = equipmentStateRoot;
+    FileName.FileNames.Clear();
+    const string equipmentNickname = "EquipmentSmoke";
+    KartExcData.AddPlantList(equipmentNickname, 1401, 1, 43, 5);
+    KartExcData.AddPartsList(equipmentNickname, 1401, 1, 63, 2, 1, 1053);
+    fileName equipmentFiles = FileName.FileNames[equipmentNickname];
+    List<Plant> savedPlants =
+        JsonHelper.DeserializeNoBom<List<Plant>>(equipmentFiles.PlantData_LoadFile);
+    List<Parts> savedParts =
+        JsonHelper.DeserializeNoBom<List<Parts>>(equipmentFiles.PartsData_LoadFile);
+    if (savedPlants?.SingleOrDefault()?.SN != 1 ||
+        savedPlants[0].Engine != 43 ||
+        savedPlants[0].EngineID != 5 ||
+        savedParts?.SingleOrDefault()?.SN != 1 ||
+        savedParts[0].Engine != 2 ||
+        savedParts[0].EngineValue != 1053)
+    {
+        Console.Error.WriteLine("P5136 equipment-state persistence failed.");
+        return 1;
+    }
+}
+finally
+{
+    FileName.FileNames.Clear();
+    FileName.ProfileDir = originalEquipmentProfileDirectory;
+    if (Directory.Exists(equipmentStateRoot))
+    {
+        Directory.Delete(equipmentStateRoot, recursive: true);
+    }
+}
+Console.WriteLine("P5136 equipment serial/persistence smoke test passed.");
 
 string itemProbabilityTestRoot = Environment.GetEnvironmentVariable("P5136_ITEM_TEST_ROOT");
 if (!string.IsNullOrWhiteSpace(itemProbabilityTestRoot))
@@ -1021,6 +1179,14 @@ if (!RunBarricadePlacementSmokeTests(out string barricadeFailure))
 }
 
 Console.WriteLine("P5136 sender-inclusive barricade placement smoke test passed.");
+
+if (!RunNormalPetRelaySmokeTests(out string normalPetRelayFailure))
+{
+    Console.Error.WriteLine($"P5136 normal-pet equipment/reaction relay failed: {normalPetRelayFailure}");
+    return 1;
+}
+
+Console.WriteLine("P5136 normal-pet equipment/type-11 peer relay smoke test passed.");
 
 if (!Korean5136Protocol.TryResolveRoomGameType(67, out byte individualCombineType) ||
     individualCombineType != 1 ||
@@ -2795,6 +2961,228 @@ static bool TryReadFooterMetric(string footer, string name, out long value)
     int end = footer.IndexOf(' ', start);
     string text = end < 0 ? footer.Substring(start) : footer.Substring(start, end - start);
     return long.TryParse(text, out value);
+}
+
+static bool RunNormalPetRelaySmokeTests(out string failure)
+{
+    const string senderNickname = "PetRelaySender";
+    const string peerNickname = "PetRelayPeer";
+    const uint senderIv = 0x13572468;
+    const uint peerIv = 0x24681357;
+    const uint ivStep = 21446425;
+    string profileRoot = Path.Combine(
+        Path.GetTempPath(),
+        $"KartRider-P5136-pet-relay-{Guid.NewGuid():N}");
+    string previousProfileRoot = FileName.ProfileDir;
+    string previousSpecialKartConfig = FileName.SpecialKartConfig;
+    ClientBuildProfile previousBuild = ClientBuildProfiles.Active;
+    Socket senderPeer = null;
+    Socket peerPeer = null;
+    SessionGroup sender = null;
+    SessionGroup peer = null;
+    int roomId = -1;
+    byte senderSlot = byte.MaxValue;
+    byte peerSlot = byte.MaxValue;
+
+    try
+    {
+        Directory.CreateDirectory(profileRoot);
+        FileName.ProfileDir = profileRoot;
+        FileName.SpecialKartConfig = Path.Combine(profileRoot, "SpecialKartConfig.json");
+        SpecialKartConfig.SaveConfigToFile(FileName.SpecialKartConfig);
+        FileName.FileNames.Clear();
+        ClientBuildProfiles.SetActive(ClientBuildProfiles.Korean5136);
+
+        (senderPeer, Socket senderServer) = CreateSocketPair();
+        (peerPeer, Socket peerServer) = CreateSocketPair();
+        senderPeer.ReceiveTimeout = 3000;
+        peerPeer.ReceiveTimeout = 3000;
+        sender = new SessionGroup(senderServer, null);
+        peer = new SessionGroup(peerServer, null);
+        sender.Client.Nickname = senderNickname;
+        peer.Client.Nickname = peerNickname;
+        PrimeSessionForRelayTest(sender, senderPeer, senderIv);
+        PrimeSessionForRelayTest(peer, peerPeer, peerIv);
+
+        roomId = RoomManager.CreateRoom();
+        senderSlot = RoomManager.AddPlayer(roomId, senderNickname, 0, 0, sender);
+        peerSlot = RoomManager.AddPlayer(roomId, peerNickname, 0, 0, peer);
+        Player senderPlayer = RoomManager.GetPlayer(roomId, senderNickname);
+        Player peerPlayer = RoomManager.GetPlayer(roomId, peerNickname);
+        if (senderSlot == byte.MaxValue || peerSlot == byte.MaxValue ||
+            senderPlayer == null || peerPlayer == null)
+        {
+            failure = "could not create a two-player relay room";
+            return false;
+        }
+
+        var equipment = new RiderItemData { Set_Pet = 30008 };
+        byte[] equipmentBody;
+        using (var equipmentPacket = new OutPacket())
+        {
+            Korean5136Protocol.WriteRiderItemSnapshot(equipmentPacket, equipment);
+            equipmentBody = equipmentPacket.ToArray();
+        }
+        using (var equipmentRequest = new InPacket(equipmentBody))
+        {
+            if (!Korean5136Protocol.TryHandle(
+                    sender,
+                    Adler32Helper.GenerateAdler32_ASCII("LoRqSetRiderItemOnPacket", 0),
+                    equipmentRequest))
+            {
+                failure = "P5136 equipment request was not handled";
+                return false;
+            }
+        }
+
+        byte[] equipmentRelay = ReceiveEncryptedLogicalPacket(peerPeer, peerIv);
+        uint equipmentHash = Adler32Helper.GenerateAdler32_ASCII("GrSlotItemOnPacket", 0);
+        int petOffset = 4 + 4 + Korean5136Protocol.RiderItemPetOffset;
+        if (equipmentRelay.Length != 4 + 4 + Korean5136Protocol.RiderItemSnapshotWireLength ||
+            BitConverter.ToUInt32(equipmentRelay, 0) != equipmentHash ||
+            BitConverter.ToInt32(equipmentRelay, 4) != senderPlayer.ID ||
+            BitConverter.ToUInt16(equipmentRelay, petOffset) != equipment.Set_Pet)
+        {
+            failure =
+                "room equipment relay did not preserve the P5136 Set_Pet slot: " +
+                $"length={equipmentRelay.Length}; " +
+                $"hash=0x{(equipmentRelay.Length >= 4 ? BitConverter.ToUInt32(equipmentRelay, 0) : 0):X8}; " +
+                $"player={(equipmentRelay.Length >= 8 ? BitConverter.ToInt32(equipmentRelay, 4) : -1)}; " +
+                $"pet={(equipmentRelay.Length >= petOffset + 2 ? BitConverter.ToUInt16(equipmentRelay, petOffset) : 0)}";
+            return false;
+        }
+
+        byte[] expectedReaction;
+        using (var reactionPacket = new OutPacket("GameSlotPacket"))
+        {
+            reactionPacket.WriteInt(senderPlayer.ID);
+            reactionPacket.WriteUInt(
+                (1u << senderPlayer.ID) | (1u << peerPlayer.ID));
+            reactionPacket.WriteByte(11);
+            reactionPacket.WriteByte(1);
+            reactionPacket.WriteShort(9); // water bomb
+            reactionPacket.WriteByte(1);
+            reactionPacket.WriteShort(0);
+            reactionPacket.WriteInt(0);
+            expectedReaction = reactionPacket.ToArray();
+        }
+
+        using (var reactionRequest = new InPacket(expectedReaction))
+        {
+            reactionRequest.Position = sizeof(uint);
+            SlotData.GameSlotPacket(sender, reactionRequest);
+        }
+
+        byte[] reactionRelay = ReceiveEncryptedLogicalPacket(peerPeer, peerIv + ivStep);
+        if (!reactionRelay.SequenceEqual(expectedReaction))
+        {
+            failure = "type-11 pet reaction was not relayed byte-for-byte";
+            return false;
+        }
+        if (SpinWait.SpinUntil(() => senderPeer.Available > 0, 100))
+        {
+            failure = "type-11 pet reaction was echoed to its sender";
+            return false;
+        }
+
+        uint peerIvAfterPositiveRelay = peerIv + (ivStep * 2);
+        byte[] selfOnlyReaction;
+        using (var reactionPacket = new OutPacket("GameSlotPacket"))
+        {
+            reactionPacket.WriteInt(senderPlayer.ID);
+            reactionPacket.WriteUInt(1u << senderPlayer.ID);
+            reactionPacket.WriteByte(11);
+            reactionPacket.WriteByte(1);
+            reactionPacket.WriteShort(9);
+            reactionPacket.WriteByte(1);
+            reactionPacket.WriteShort(0);
+            reactionPacket.WriteInt(0);
+            selfOnlyReaction = reactionPacket.ToArray();
+        }
+        using (var reactionRequest = new InPacket(selfOnlyReaction))
+        {
+            reactionRequest.Position = sizeof(uint);
+            SlotData.GameSlotPacket(sender, reactionRequest);
+        }
+        if (SpinWait.SpinUntil(
+                () => peerPeer.Available > 0 || peer.Client.SIV != peerIvAfterPositiveRelay,
+                150))
+        {
+            failure = "type-11 recipient mask leaked a self-only reaction to a peer";
+            return false;
+        }
+
+        failure = string.Empty;
+        return true;
+    }
+    catch (Exception exception)
+    {
+        failure = exception.ToString();
+        return false;
+    }
+    finally
+    {
+        if (roomId >= 0)
+        {
+            if (RoomManager.GetRoom(roomId) is GameRoom room)
+            {
+                // Remove both synthetic members atomically.  The normal
+                // one-at-a-time path publishes an intermediate slot snapshot,
+                // which is intentionally outside this focused relay test.
+                lock (room)
+                {
+                    Array.Clear(room._slots, 0, room._slots.Length);
+                    Array.Clear(room._IDs, 0, room._IDs.Length);
+                    Array.Clear(room.ObIDs, 0, room.ObIDs.Length);
+                }
+                RoomManager.RemovePlayerByNickname(senderNickname);
+                RoomManager.RemovePlayerByNickname(peerNickname);
+                RoomManager.RemoveRoom(room);
+            }
+        }
+        sender?.Client.Disconnect();
+        peer?.Client.Disconnect();
+        senderPeer?.Dispose();
+        peerPeer?.Dispose();
+        FileName.FileNames.Clear();
+        FileName.ProfileDir = previousProfileRoot;
+        FileName.SpecialKartConfig = previousSpecialKartConfig;
+        ClientBuildProfiles.SetActive(previousBuild);
+        if (Directory.Exists(profileRoot))
+            Directory.Delete(profileRoot, true);
+    }
+}
+
+static void PrimeSessionForRelayTest(SessionGroup session, Socket peer, uint iv)
+{
+    using var initial = new OutPacket();
+    initial.WriteUInt(0x51365136);
+    session.Client.SendInitialHandshake(initial, iv);
+    int payloadLength = BitConverter.ToInt32(ReceiveExact(peer, sizeof(int)), 0);
+    byte[] payload = ReceiveExact(peer, payloadLength);
+    if (payloadLength != sizeof(uint) || BitConverter.ToUInt32(payload, 0) != 0x51365136)
+        throw new InvalidDataException("Could not prime the relay-test session.");
+}
+
+static byte[] ReceiveEncryptedLogicalPacket(Socket peer, uint iv)
+{
+    uint encodedLength = BitConverter.ToUInt32(ReceiveExact(peer, sizeof(uint)), 0);
+    uint framedBodyLength = encodedLength ^ iv ^ 4164199944u;
+    if (framedBodyLength < sizeof(uint) || framedBodyLength > 1_048_576)
+        throw new InvalidDataException($"Invalid encrypted relay frame length {framedBodyLength}.");
+
+    byte[] bodyAndChecksum = ReceiveExact(peer, checked((int)framedBodyLength));
+    int logicalLength = checked((int)framedBodyLength - sizeof(uint));
+    byte[] logicalPacket = new byte[logicalLength];
+    Buffer.BlockCopy(bodyAndChecksum, 0, logicalPacket, 0, logicalPacket.Length);
+    uint receivedChecksum = BitConverter.ToUInt32(bodyAndChecksum, logicalLength);
+    uint calculatedChecksum = KRPacketCrypto.HashDecrypt(
+        logicalPacket,
+        (uint)logicalPacket.Length,
+        iv);
+    if ((iv ^ receivedChecksum ^ 3388492432u) != calculatedChecksum)
+        throw new InvalidDataException("Encrypted relay frame checksum mismatch.");
+    return logicalPacket;
 }
 
 static bool RunRoomNameSpeedKeywordSmokeTests(out string failure)

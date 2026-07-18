@@ -21,6 +21,8 @@ public static class Korean5136Protocol
     public const ushort ClientVersion = 5136;
     public const ushort LocaleId = 1002;
     public const byte ClientLocation = 118;
+    public const int RiderItemSnapshotWireLength = 65;
+    public const int RiderItemPetOffset = 26;
 
     private const uint FirstKey = 2919676295u;
     private const uint SecondKey = 263300380u;
@@ -140,11 +142,17 @@ public static class Korean5136Protocol
             return true;
         }
 
-        if (Is(hash, "PqEquipTuningPacket") || Is(hash, "PqEquipTuningExPacket"))
+        if (Is(hash, "PqEquipTuningPacket"))
         {
             using OutPacket response = new OutPacket("PrEquipTuningPacket");
             response.WriteInt(0);
             parent.Client.Send(response);
+            return true;
+        }
+
+        if (Is(hash, "PqEquipTuningExPacket"))
+        {
+            HandlePlantPartEquip(parent, packet);
             return true;
         }
 
@@ -844,6 +852,14 @@ public static class Korean5136Protocol
     {
         string nickname = EnsureNickname(parent);
         var config = ProfileService.GetProfileConfig(nickname);
+        ushort normalizedKartSerial = NormalizeKartSerial(
+            config.RiderItem.Set_Kart,
+            config.RiderItem.Set_KartSN);
+        if (config.RiderItem.Set_KartSN != normalizedKartSerial)
+        {
+            config.RiderItem.Set_KartSN = normalizedKartSerial;
+            ProfileService.Save(nickname, config);
+        }
 
         // The P5136 startup sequence preloads the complete legacy inventory
         // before publishing the rider snapshot. The later
@@ -859,7 +875,7 @@ public static class Korean5136Protocol
         response.WriteShort(config.Rider.Emblem1);
         response.WriteShort(config.Rider.Emblem2);
         response.WriteShort(0);
-        WriteLegacyRiderItems(response, config.RiderItem);
+        WriteRiderItemSnapshot(response, config.RiderItem);
         response.WriteString("");
         response.WriteUInt(config.Rider.Lucci);
         response.WriteInt(unchecked((int)config.Rider.RP));
@@ -889,8 +905,22 @@ public static class Korean5136Protocol
     private static void ReadRiderItems(SessionGroup parent, InPacket packet)
     {
         string nickname = EnsureNickname(parent);
+        if (packet.Available < RiderItemSnapshotWireLength)
+        {
+            PacketTrace.LogEvent(
+                "LOGIN-TCP",
+                "P5136-RIDER-EQUIPMENT-REJECT",
+                parent.Client.GetLocalEndPoint(),
+                parent.Client.GetRemoteEndPoint(),
+                nickname,
+                $"reason=truncated; available={packet.Available}; " +
+                $"expected={RiderItemSnapshotWireLength}");
+            return;
+        }
+
         var config = ProfileService.GetProfileConfig(nickname);
         var item = config.RiderItem;
+        ushort previousPet = item.Set_Pet;
         item.Set_Character = packet.ReadUShort();
         item.Set_Paint = packet.ReadUShort();
         item.Set_Kart = packet.ReadUShort();
@@ -920,11 +950,113 @@ public static class Korean5136Protocol
         item.Set_FishingPole = packet.ReadUShort();
         item.Set_Tachometer = packet.ReadUShort();
         item.Set_Dye = packet.ReadUShort();
-        item.Set_KartSN = packet.ReadUShort();
+        item.Set_KartSN = NormalizeKartSerial(item.Set_Kart, packet.ReadUShort());
         item.Set_Unknown4 = packet.ReadByte();
         item.Set_KartCoating = packet.ReadUShort();
         item.Set_KartTailLamp = packet.ReadUShort();
         ProfileService.Save(nickname, config);
+
+        int roomId = RoomManager.TryGetRoomId(nickname);
+        bool roomSnapshotBroadcast = false;
+        if (roomId >= 0)
+        {
+            Player player = RoomManager.GetPlayer(roomId, nickname);
+            if (player != null)
+            {
+                using OutPacket response = new OutPacket("GrSlotItemOnPacket");
+                response.WriteInt(player.ID);
+                GameSupport.GetRider(nickname, response);
+                MultyPlayer.BroadCast(roomId, response, nickname);
+                roomSnapshotBroadcast = true;
+            }
+        }
+
+        // Normal item-mode pet defense is client-authoritative in P5136.  The
+        // client resolves Set_Pet against etc_/itemTable@kr.xml and performs
+        // the probability roll locally, so keeping every room participant's
+        // equipment snapshot current is the server-side integration point.
+        PacketTrace.LogDetailEvent(
+            "LOGIN-TCP",
+            "P5136-PET-EQUIPMENT",
+            parent.Client.GetLocalEndPoint(),
+            parent.Client.GetRemoteEndPoint(),
+            nickname,
+            $"previousPet={previousPet}; pet={item.Set_Pet}; room={roomId}; " +
+            $"roomSnapshotBroadcast={roomSnapshotBroadcast}");
+    }
+
+    private static void HandlePlantPartEquip(SessionGroup parent, InPacket packet)
+    {
+        const int RequestBodyLength = sizeof(short) * 5;
+        if (packet.Available < RequestBodyLength)
+        {
+            RejectPlantPartEquip(
+                parent,
+                $"reason=truncated; available={packet.Available}; expected={RequestBodyLength}");
+            return;
+        }
+
+        short itemCategory = packet.ReadShort();
+        short itemId = packet.ReadShort();
+        short kartCategory = packet.ReadShort();
+        short kartId = packet.ReadShort();
+        short kartSerial = packet.ReadShort();
+
+        if (itemCategory < 43 || itemCategory > 46 || itemId < 0 || kartId <= 0)
+        {
+            RejectPlantPartEquip(
+                parent,
+                $"reason=invalid-fields; category={itemCategory}; item={itemId}; " +
+                $"kartCategory={kartCategory}; kart={kartId}; serial={kartSerial}");
+            return;
+        }
+        kartSerial = NormalizeKartSerial(kartId, kartSerial);
+
+        string nickname = EnsureNickname(parent);
+        KartExcData.AddPlantList(
+            nickname,
+            kartId,
+            kartSerial,
+            itemCategory,
+            itemId);
+
+        // Exact HF_5136 success layout.  The first kart serial is the legacy
+        // inventory serial echoed by the client; it intentionally appears
+        // twice before the kart and part identifiers.
+        using OutPacket response = new OutPacket("PrEquipTuningPacket");
+        response.WriteByte(1);
+        response.WriteShort(kartSerial);
+        response.WriteShort(kartSerial);
+        response.WriteShort(kartId);
+        response.WriteShort(itemCategory);
+        response.WriteShort(itemId);
+        parent.Client.Send(response);
+
+        PacketTrace.LogEvent(
+            "TCP",
+            "P5136-PLANT-EQUIP",
+            parent.Client.GetLocalEndPoint(),
+            parent.Client.GetRemoteEndPoint(),
+            nickname,
+            $"category={itemCategory}; item={itemId}; kart={kartId}; serial={kartSerial}");
+    }
+
+    private static void RejectPlantPartEquip(SessionGroup parent, string details)
+    {
+        PacketTrace.LogEvent(
+            "TCP",
+            "P5136-PLANT-EQUIP-REJECT",
+            parent.Client.GetLocalEndPoint(),
+            parent.Client.GetRemoteEndPoint(),
+            parent.Client.Nickname,
+            details);
+
+        // The legacy client treats a zero result as a failed tuning request.
+        // Preserve the established four-byte failure body so a malformed
+        // request cannot leave its pending UI operation unresolved.
+        using OutPacket response = new OutPacket("PrEquipTuningPacket");
+        response.WriteInt(0);
+        parent.Client.Send(response);
     }
 
     private static void SendRiderInfo(SessionGroup parent, InPacket packet)
@@ -951,7 +1083,7 @@ public static class Korean5136Protocol
         response.WriteString(nickname);
         response.WriteString(nickname);
         WriteLegacyTime(response);
-        WriteLegacyRiderItems(response, config.RiderItem);
+        WriteRiderItemSnapshot(response, config.RiderItem);
         response.WriteString("");
         response.WriteInt(unchecked((int)rider.RP));
         response.WriteInt(0);
@@ -1028,7 +1160,12 @@ public static class Korean5136Protocol
         ProfileService.Save(nickname, config);
     }
 
-    private static void WriteLegacyRiderItems(OutPacket packet, RiderItemData item)
+    /// <summary>
+    /// Writes the exact 65-byte P5136 rider-equipment snapshot.  Room, race,
+    /// profile, and equipment-change packets must all use this layout so the
+    /// client sees the equipped normal pet at the same slot (byte offset 26).
+    /// </summary>
+    public static void WriteRiderItemSnapshot(OutPacket packet, RiderItemData item)
     {
         packet.WriteUShort(item.Set_Character);
         packet.WriteUShort(item.Set_Paint);
@@ -1059,7 +1196,7 @@ public static class Korean5136Protocol
         packet.WriteUShort(item.Set_FishingPole);
         packet.WriteUShort(item.Set_Tachometer);
         packet.WriteUShort(item.Set_Dye);
-        packet.WriteUShort(item.Set_KartSN);
+        packet.WriteUShort(NormalizeKartSerial(item.Set_Kart, item.Set_KartSN));
         packet.WriteByte(item.Set_Unknown4);
         packet.WriteUShort(item.Set_KartCoating);
         packet.WriteUShort(item.Set_KartTailLamp);
@@ -1072,6 +1209,12 @@ public static class Korean5136Protocol
         packet.WriteUShort(unchecked((ushort)elapsed.Days));
         packet.WriteUShort(unchecked((ushort)(now.TimeOfDay.TotalSeconds / 4.0)));
     }
+
+    private static ushort NormalizeKartSerial(ushort kartId, ushort serial) =>
+        kartId == 0 ? serial : (ushort)1;
+
+    private static short NormalizeKartSerial(short kartId, short serial) =>
+        kartId == 0 ? serial : (short)1;
 
     private static string EnsureNickname(SessionGroup parent)
     {

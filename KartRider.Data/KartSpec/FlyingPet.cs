@@ -1,10 +1,10 @@
 ﻿using ExcData;
 using KartRider;
+using KartRider.Compatibility;
 using Profile;
 using RiderData;
 using System;
 using System.Collections.Generic;
-using System.Runtime.CompilerServices;
 using System.Xml;
 
 namespace KartRider
@@ -29,7 +29,24 @@ namespace KartRider
 
         public void FlyingPet_Spec(ushort FlyingPetID)
         {
-            if (FlyingPet.flyingName.ContainsKey(FlyingPetID))
+            if (ClientBuildProfiles.Active.Build == ClientBuild.Korean5136 &&
+                Korean5136FlyingPetPerformance.TryGet(
+                    FlyingPetID,
+                    out Korean5136FlyingPetPerformance.Spec korean5136Spec))
+            {
+                DragFactor = korean5136Spec.DragFactor;
+                ForwardAccelForce = korean5136Spec.ForwardAccelForce;
+                DriftEscapeForce = korean5136Spec.DriftEscapeForce;
+                CornerDrawFactor = korean5136Spec.CornerDrawFactor;
+                NormalBoosterTime = korean5136Spec.NormalBoosterTime;
+                ItemBoosterTime = korean5136Spec.ItemBoosterTime;
+                TeamBoosterTime = korean5136Spec.TeamBoosterTime;
+                StartForwardAccelForceItem = korean5136Spec.StartForwardAccelForceItem;
+                StartForwardAccelForceSpeed = korean5136Spec.StartForwardAccelForceSpeed;
+                Console.WriteLine(
+                    $"flying:{FlyingPetID},source=Korean5136BuiltIn");
+            }
+            else if (FlyingPet.flyingName.ContainsKey(FlyingPetID))
             {
                 string Name = FlyingPet.flyingName[FlyingPetID];
                 Console.WriteLine($"flying:{FlyingPetID},Name:{Name}");

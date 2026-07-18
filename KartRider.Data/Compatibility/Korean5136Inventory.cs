@@ -1,5 +1,6 @@
 using KartRider.Common.Network;
 using KartRider.IO.Packet;
+using ExcData;
 using Profile;
 using System;
 using System.Collections.Generic;
@@ -42,10 +43,16 @@ internal static class Korean5136Inventory
 
         try
         {
+            if (!FileName.FileNames.ContainsKey(nickname))
+            {
+                FileName.Load(nickname);
+            }
+
             plan = BuildPlan(
                 FileName.ProfileDir,
                 config.Rider.SlotChanger,
-                Program.PreventItem);
+                Program.PreventItem,
+                FileName.FileNames[nickname].PlantData_LoadFile);
         }
         catch (Exception exception)
         {
@@ -59,6 +66,16 @@ internal static class Korean5136Inventory
             throw new InvalidOperationException(
                 "P5136 공용 인벤토리를 만들 수 없습니다. 서버를 중지하고 카트 데이터 XML을 다시 추출하세요.",
                 exception);
+        }
+
+        foreach (List<PlantExcRecord> chunk in plan.PlantExcPackets)
+        {
+            using OutPacket packet = new OutPacket("LoRpGetRiderExcDataPacket");
+            WritePlantExcPacketBody(
+                packet,
+                chunk,
+                ReferenceEquals(chunk, plan.PlantExcPackets[0]));
+            parent.Client.Send(packet);
         }
 
         foreach (List<PartsExcRecord> chunk in plan.PartsExcPackets)
@@ -81,11 +98,17 @@ internal static class Korean5136Inventory
             parent.Client.GetLocalEndPoint(),
             parent.Client.GetRemoteEndPoint(),
             nickname,
-            $"status=catalog; excPackets={plan.PartsExcPackets.Count}; excRecords={plan.PartsExcRecordCount}; " +
+            $"status=catalog; plantPackets={plan.PlantExcPackets.Count}; " +
+            $"plantRecords={plan.PlantExcRecordCount}; excPackets={plan.PartsExcPackets.Count}; " +
+            $"excRecords={plan.PartsExcRecordCount}; " +
             $"itemPackets={plan.ItemPackets.Count}; itemRecords={plan.ItemRecordCount}");
     }
 
-    private static InventoryPlan BuildPlan(string profileDirectory, ushort slotChanger, bool preventItem)
+    private static InventoryPlan BuildPlan(
+        string profileDirectory,
+        ushort slotChanger,
+        bool preventItem,
+        string plantDataPath = null)
     {
         IReadOnlyList<KartCatalogInventoryItem> catalog =
             KartCatalogInventory.GetItemsSnapshot();
@@ -98,8 +121,9 @@ internal static class Korean5136Inventory
         var plan = new InventoryPlan();
 
         // HF_5136 sends Tune, Plant, Level, and Parts exception streams first.
-        // The bundled P5136 profile has only PartsData.xml, so the other three
-        // streams contain no records and produce no packets.
+        // Plant state becomes user-specific as soon as a part is equipped, so
+        // it must be restored before the global X-parts snapshot on reconnect.
+        AddPlantExcPackets(plan, plantDataPath);
         AddPartsExcPackets(plan, Path.Combine(profileDirectory, "PartsData.xml"));
 
         var records = new List<RiderItemRecord>();
@@ -111,10 +135,13 @@ internal static class Korean5136Inventory
             }
 
             ushort amount = GetCatalogAmount(item.Category, item.Id, slotChanger);
+            ushort serial = item.Category == 3
+                ? NormalizeKartSerial(item.Id, item.Serial)
+                : item.Serial;
             records.Add(RiderItemRecord.Normal(
                 item.Category,
                 item.Id,
-                item.Serial,
+                serial,
                 amount,
                 preventItem));
         }
@@ -197,6 +224,28 @@ internal static class Korean5136Inventory
             .ToArray();
     }
 
+    internal static IReadOnlyList<(short Id, short Serial)>
+        BuildPlantExcSnapshotForTesting(string plantDataPath)
+    {
+        var plan = new InventoryPlan();
+        AddPlantExcPackets(plan, plantDataPath);
+        return plan.PlantExcPackets
+            .SelectMany(packet => packet)
+            .Select(record => (record.Id, record.Serial))
+            .ToArray();
+    }
+
+    internal static IReadOnlyList<(short Id, short Serial)>
+        BuildPartsExcSnapshotForTesting(string partsDataPath)
+    {
+        var plan = new InventoryPlan();
+        AddPartsExcPackets(plan, partsDataPath);
+        return plan.PartsExcPackets
+            .SelectMany(packet => packet)
+            .Select(record => (record.Id, record.Serial))
+            .ToArray();
+    }
+
     private static ushort GetCatalogAmount(ushort category, ushort id, ushort slotChanger)
     {
         if (UnitAmountCategories.Contains(category) ||
@@ -269,9 +318,10 @@ internal static class Korean5136Inventory
                 continue;
             }
 
+            short kartId = ParseShort(element, "id");
             records.Add(new PartsExcRecord(
-                ParseShort(element, "id"),
-                ParseShort(element, "sn"),
+                kartId,
+                NormalizeKartSerial(kartId, ParseShort(element, "sn")),
                 ParseShort(element, "Item_Id1"),
                 ParseByte(element, "Grade1"),
                 ParseShort(element, "PartsValue1"),
@@ -292,6 +342,38 @@ internal static class Korean5136Inventory
         {
             int count = Math.Min(ExcDataChunkSize, records.Count - offset);
             plan.AddPartsExcPacket(records.GetRange(offset, count));
+        }
+    }
+
+    private static void AddPlantExcPackets(InventoryPlan plan, string plantDataPath)
+    {
+        if (string.IsNullOrWhiteSpace(plantDataPath) || !File.Exists(plantDataPath))
+        {
+            return;
+        }
+
+        List<Plant> plants = JsonHelper.DeserializeNoBom<List<Plant>>(plantDataPath)
+            ?? new List<Plant>();
+        for (int offset = 0; offset < plants.Count; offset += ExcDataChunkSize)
+        {
+            int count = Math.Min(ExcDataChunkSize, plants.Count - offset);
+            var chunk = new List<PlantExcRecord>(count);
+            for (int index = 0; index < count; index++)
+            {
+                Plant plant = plants[offset + index];
+                chunk.Add(new PlantExcRecord(
+                    plant.ID,
+                    NormalizeKartSerial(plant.ID, plant.SN),
+                    plant.Engine,
+                    plant.EngineID,
+                    plant.Handle,
+                    plant.HandleID,
+                    plant.Wheel,
+                    plant.WheelID,
+                    plant.Kit,
+                    plant.KitID));
+            }
+            plan.AddPlantExcPacket(chunk);
         }
     }
 
@@ -365,6 +447,44 @@ internal static class Korean5136Inventory
         packet.WriteInt(0);
     }
 
+    private static void WritePlantExcPacketBody(
+        OutPacket packet,
+        IReadOnlyList<PlantExcRecord> records,
+        bool firstChunk)
+    {
+        packet.WriteByte(0);
+        packet.WriteByte(firstChunk ? (byte)1 : (byte)0);
+        packet.WriteByte(0);
+        packet.WriteByte(0);
+        packet.WriteByte(0);
+        packet.WriteByte(0);
+        packet.WriteInt(0);
+        packet.WriteInt(records.Count);
+
+        foreach (PlantExcRecord record in records)
+        {
+            packet.WriteShort(record.Id);
+            packet.WriteShort(record.Serial);
+            packet.WriteInt(4);
+            packet.WriteShort(record.EngineCategory);
+            packet.WriteShort(record.EngineId);
+            packet.WriteShort(record.HandleCategory);
+            packet.WriteShort(record.HandleId);
+            packet.WriteShort(record.WheelCategory);
+            packet.WriteShort(record.WheelId);
+            packet.WriteShort(record.KitCategory);
+            packet.WriteShort(record.KitId);
+        }
+
+        // Exact P5136 plant exception suffix.  Later protocol generations add
+        // another byte and dword here; emitting those fields desynchronizes the
+        // HF_5136 decoder.
+        packet.WriteInt(0);
+        packet.WriteInt(0);
+        packet.WriteInt(0);
+        packet.WriteInt(0);
+    }
+
     private static XmlDocument LoadXml(string path)
     {
         var document = new XmlDocument();
@@ -378,12 +498,27 @@ internal static class Korean5136Inventory
     private static byte ParseByte(XmlElement element, string attribute) =>
         byte.Parse(element.GetAttribute(attribute), NumberStyles.Integer, CultureInfo.InvariantCulture);
 
+    private static ushort NormalizeKartSerial(ushort kartId, ushort serial) =>
+        kartId == 0 ? serial : (ushort)1;
+
+    private static short NormalizeKartSerial(short kartId, short serial) =>
+        kartId == 0 ? serial : (short)1;
+
     private sealed class InventoryPlan
     {
+        public List<List<PlantExcRecord>> PlantExcPackets { get; } =
+            new List<List<PlantExcRecord>>();
         public List<List<PartsExcRecord>> PartsExcPackets { get; } = new List<List<PartsExcRecord>>();
         public List<List<RiderItemRecord>> ItemPackets { get; } = new List<List<RiderItemRecord>>();
+        public int PlantExcRecordCount { get; private set; }
         public int PartsExcRecordCount { get; private set; }
         public int ItemRecordCount { get; private set; }
+
+        public void AddPlantExcPacket(List<PlantExcRecord> packet)
+        {
+            PlantExcPackets.Add(packet);
+            PlantExcRecordCount += packet.Count;
+        }
 
         public void AddPartsExcPacket(List<PartsExcRecord> packet)
         {
@@ -400,6 +535,44 @@ internal static class Korean5136Inventory
             ItemPackets.Add(packet);
             ItemRecordCount += packet.Count;
         }
+    }
+
+    private readonly struct PlantExcRecord
+    {
+        public PlantExcRecord(
+            short id,
+            short serial,
+            short engineCategory,
+            short engineId,
+            short handleCategory,
+            short handleId,
+            short wheelCategory,
+            short wheelId,
+            short kitCategory,
+            short kitId)
+        {
+            Id = id;
+            Serial = serial;
+            EngineCategory = engineCategory;
+            EngineId = engineId;
+            HandleCategory = handleCategory;
+            HandleId = handleId;
+            WheelCategory = wheelCategory;
+            WheelId = wheelId;
+            KitCategory = kitCategory;
+            KitId = kitId;
+        }
+
+        public short Id { get; }
+        public short Serial { get; }
+        public short EngineCategory { get; }
+        public short EngineId { get; }
+        public short HandleCategory { get; }
+        public short HandleId { get; }
+        public short WheelCategory { get; }
+        public short WheelId { get; }
+        public short KitCategory { get; }
+        public short KitId { get; }
     }
 
     private readonly struct RiderItemRecord

@@ -231,6 +231,32 @@ public class SlotData
                     }
                 }
                 Console.WriteLine("GameSlotPacket, Attacked. Skill = {0}", skill);
+
+                // P5136 resolves normal-pet defense locally from Set_Pet and
+                // etc_/itemTable@kr.xml, then reports the result as this
+                // type-11 frame.  It is a client broadcast (the uint 'item'
+                // field carries the recipient mask), not server-only
+                // telemetry.  Preserve the original frame and its mask; do
+                // not roll the pet probability a second time on the server.
+                byte[] reactionPacket = iPacket.ToArray();
+                PacketTrace.LogDetailEvent(
+                    "LOGIN-TCP",
+                    "ITEM-REACTION-RELAY",
+                    Parent.Client.GetLocalEndPoint(),
+                    Parent.Client.GetRemoteEndPoint(),
+                    Parent.Client.Nickname,
+                    $"playerId={id}; recipientMask=0x{item:X8}; uni={uni}; " +
+                    $"skill={skill}; bytes={reactionPacket.Length}; " +
+                    "recipients=player-id-mask except sender");
+                using (OutPacket oPacket = new OutPacket())
+                {
+                    oPacket.WriteBytes(reactionPacket);
+                    MultyPlayer.BroadCastPlayerIdMask(
+                        roomId,
+                        oPacket,
+                        item,
+                        Parent.Client.Nickname);
+                }
                 return;
             }
         }

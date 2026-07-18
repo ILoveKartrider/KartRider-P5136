@@ -2313,6 +2313,49 @@ public static class MultyPlayer
         }
     }
 
+    /// <summary>
+    /// Relays a client-authored GameSlot result only to the player IDs selected
+    /// by its wire-level recipient mask. P5136 assigns IDs 0-15 across racers
+    /// and observers, so SlotId cannot represent the observer half.
+    /// </summary>
+    public static void BroadCastPlayerIdMask(
+        int roomId,
+        OutPacket outPacket,
+        uint recipientMask,
+        string self = "")
+    {
+        GameRoom room = RoomManager.GetRoom(roomId);
+        if (room == null || recipientMask == 0)
+        {
+            return;
+        }
+
+        var recipients = new List<Player>();
+        var seenIds = new HashSet<int>();
+        lock (room)
+        {
+            foreach (RoomMember member in room._slots.Concat(room.ObIDs))
+            {
+                if (member is not Player player ||
+                    player.ID < 0 ||
+                    player.ID >= 32 ||
+                    string.Equals(player.Nickname, self, StringComparison.Ordinal) ||
+                    (recipientMask & (1u << player.ID)) == 0 ||
+                    !seenIds.Add(player.ID))
+                {
+                    continue;
+                }
+
+                recipients.Add(player);
+            }
+        }
+
+        foreach (Player player in recipients)
+        {
+            player.Session.Client.Send(outPacket);
+        }
+    }
+
     // 添加指定数量的 Ai
     static void AddAis(GameRoom room, int count, byte randomTrackGameType)
     {
