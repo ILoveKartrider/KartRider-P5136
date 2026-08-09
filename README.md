@@ -1,3 +1,7 @@
+> [!IMPORTANT]
+> **This repository is no longer maintained. Please use the actively maintained Rust version: [ILoveKartrider/P5136_Rust](https://github.com/ILoveKartrider/P5136_Rust).**
+>
+> 이 저장소는 더 이상 유지보수되지 않습니다. 위 Rust 버전을 사용해 주세요.
 # KartRider P5136
 
 한국 카트라이더 프로토콜 5136 클라이언트를 위한 테스트용 서버와 Windows 접속기입니다. 로그인과 LAN 접속, 마이룸·소셜, 방 생성·설정, 맵 변경, 스피드전과 아이템전의 주요 흐름을 지원하는 개발 버전입니다.
